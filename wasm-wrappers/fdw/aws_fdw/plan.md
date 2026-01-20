@@ -10,28 +10,28 @@ This document outlines the plan for creating a WebAssembly (WASM) Foreign Data W
 2. Support multiple AWS services through a unified interface
 3. Follow existing WASM wrapper patterns in the codebase
 4. Enable community contributions and easy deployment
+5. **Read-only access** - No write/modify operations in initial release
 
 ## AWS Services to Support
 
-### Phase 1: Core Services (Initial Release)
+### Phase 1: Initial Release (Read-Only)
 
-| Service | Description | Use Cases |
-|---------|-------------|-----------|
-| **S3** | Object storage listing | List buckets, objects, metadata |
-| **DynamoDB** | NoSQL database queries | Scan/query tables, list tables |
-| **Lambda** | Serverless functions | List functions, invoke functions |
-| **CloudWatch** | Metrics and logs | Query metrics, log insights |
+| Service | Description | Operations |
+|---------|-------------|------------|
+| **S3** | Object storage listing | List buckets, list objects, get object metadata |
+| **Lambda** | Serverless functions | List functions, get function details |
+| **CloudWatch** | Metrics and logs | List metrics, get metric data |
 
-### Phase 2: Extended Services (Future)
+### Future Phases
 
 | Service | Description |
 |---------|-------------|
-| EC2 | Instance management |
-| RDS | Database instances |
-| SQS | Message queues |
-| SNS | Notifications |
-| IAM | Identity management |
-| Secrets Manager | Secrets retrieval |
+| EC2 | Instance listing and details |
+| RDS | Database instance listing |
+| SQS | Queue listing and message counts |
+| SNS | Topic listing |
+| IAM | User/role listing |
+| Secrets Manager | Secret listing (not values) |
 
 ## Architecture
 
@@ -47,7 +47,6 @@ wasm-wrappers/fdw/aws_fdw/
 │   ├── services/
 │   │   ├── mod.rs          # Service module exports
 │   │   ├── s3.rs           # S3 service implementation
-│   │   ├── dynamodb.rs     # DynamoDB service implementation
 │   │   ├── lambda.rs       # Lambda service implementation
 │   │   └── cloudwatch.rs   # CloudWatch service implementation
 │   └── types.rs            # Shared types and conversions
@@ -71,24 +70,24 @@ wasm-wrappers/fdw/aws_fdw/
                         │
                         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   AWS WASM FDW                               │
+│                   AWS WASM FDW (Read-Only)                   │
 │  ┌─────────────────────────────────────────────────────┐    │
 │  │                    lib.rs                            │    │
-│  │  - FDW lifecycle (init, scan, modify)               │    │
+│  │  - FDW lifecycle (init, scan only)                  │    │
 │  │  - Service routing based on table options           │    │
 │  └──────────────────────┬──────────────────────────────┘    │
 │                         │                                    │
 │  ┌──────────────────────┴──────────────────────────────┐    │
 │  │                   Services Layer                     │    │
-│  │  ┌─────────┐ ┌──────────┐ ┌────────┐ ┌───────────┐ │    │
-│  │  │   S3    │ │ DynamoDB │ │ Lambda │ │CloudWatch │ │    │
-│  │  └────┬────┘ └────┬─────┘ └───┬────┘ └─────┬─────┘ │    │
-│  └───────┼───────────┼───────────┼────────────┼───────┘    │
-│          │           │           │            │             │
-│  ┌───────┴───────────┴───────────┴────────────┴───────┐    │
-│  │              AWS Client (auth.rs)                   │    │
-│  │  - AWS Signature V4 signing                        │    │
-│  │  - Request construction                            │    │
+│  │  ┌─────────┐ ┌────────┐ ┌───────────┐              │    │
+│  │  │   S3    │ │ Lambda │ │CloudWatch │              │    │
+│  │  └────┬────┘ └───┬────┘ └─────┬─────┘              │    │
+│  └───────┼──────────┼────────────┼─────────────────────┘    │
+│          │          │            │                          │
+│  ┌───────┴──────────┴────────────┴───────────────────┐     │
+│  │              AWS Client (auth.rs)                   │     │
+│  │  - AWS Signature V4 signing                        │     │
+│  │  - Request construction (GET/HEAD only)            │     │
 │  └──────────────────────┬──────────────────────────────┘    │
 │                         │                                    │
 └─────────────────────────┼────────────────────────────────────┘
@@ -159,7 +158,7 @@ pub struct AwsCredentials {
 
 pub fn sign_request(
     credentials: &AwsCredentials,
-    method: &str,
+    method: &str,  // GET or HEAD only for read-only
     url: &str,
     headers: &[(String, String)],
     body: &[u8],
@@ -184,20 +183,22 @@ struct AwsFdw {
 
 enum AwsService {
     S3 { bucket: Option<String>, prefix: Option<String> },
-    DynamoDB { table_name: String },
     Lambda { function_name: Option<String> },
     CloudWatch { namespace: String, metric_name: Option<String> },
 }
 
-// Implement FDW routines:
+// Implement FDW routines (read-only):
 // - init(): Parse server options, get credentials from Vault
 // - begin_scan(): Call appropriate AWS service API
 // - iter_scan(): Return rows one at a time
 // - re_scan(): Reset row index
 // - end_scan(): Cleanup
+//
+// NOT implemented (read-only):
+// - begin_modify, insert, update, delete, end_modify
 ```
 
-### 5. Service Implementations
+### 5. Service Implementations (Read-Only)
 
 #### S3 Service (services/s3.rs)
 
@@ -207,20 +208,12 @@ enum AwsService {
 | ListObjectsV2 | GET /{bucket}?list-type=2 | key, size, last_modified, etag, storage_class |
 | HeadObject | HEAD /{bucket}/{key} | content_type, content_length, metadata |
 
-#### DynamoDB Service (services/dynamodb.rs)
-
-| Operation | API Action | Foreign Table Columns |
-|-----------|------------|----------------------|
-| ListTables | ListTables | table_name |
-| Scan | Scan | (dynamic based on table schema) |
-| Query | Query | (dynamic based on table schema) |
-
 #### Lambda Service (services/lambda.rs)
 
 | Operation | API Endpoint | Foreign Table Columns |
 |-----------|--------------|----------------------|
-| ListFunctions | GET /functions | function_name, runtime, handler, memory_size, timeout, last_modified |
-| Invoke | POST /functions/{name}/invocations | response_payload, status_code |
+| ListFunctions | GET /2015-03-31/functions | function_name, runtime, handler, memory_size, timeout, last_modified, description |
+| GetFunction | GET /2015-03-31/functions/{name} | function_name, runtime, handler, code_size, last_modified, state |
 
 #### CloudWatch Service (services/cloudwatch.rs)
 
@@ -248,12 +241,11 @@ enum AwsService {
 
 | Option | Service | Description |
 |--------|---------|-------------|
-| `service` | All | AWS service name: s3, dynamodb, lambda, cloudwatch |
+| `service` | All | AWS service name: s3, lambda, cloudwatch |
 | `object` | All | Object type to query (e.g., buckets, objects, functions) |
 | `bucket` | S3 | S3 bucket name |
 | `prefix` | S3 | Object key prefix filter |
-| `table_name` | DynamoDB | DynamoDB table name |
-| `function_name` | Lambda | Lambda function name |
+| `function_name` | Lambda | Lambda function name (for details) |
 | `namespace` | CloudWatch | CloudWatch metric namespace |
 | `metric_name` | CloudWatch | CloudWatch metric name |
 
@@ -318,39 +310,6 @@ options (
 select * from aws_s3_objects where key like '%.json';
 ```
 
-### DynamoDB Examples
-
-```sql
--- List DynamoDB tables
-create foreign table aws_dynamodb_tables (
-  table_name text
-)
-server aws_server
-options (
-  service 'dynamodb',
-  object 'tables'
-);
-
-select * from aws_dynamodb_tables;
-
--- Query a DynamoDB table
-create foreign table users (
-  id text,
-  name text,
-  email text,
-  created_at timestamp,
-  attrs jsonb
-)
-server aws_server
-options (
-  service 'dynamodb',
-  object 'items',
-  table_name 'users'
-);
-
-select * from users where id = 'user123';
-```
-
 ### Lambda Examples
 
 ```sql
@@ -361,7 +320,8 @@ create foreign table aws_lambda_functions (
   handler text,
   memory_size int,
   timeout int,
-  last_modified timestamp
+  last_modified timestamp,
+  description text
 )
 server aws_server
 options (
@@ -370,6 +330,24 @@ options (
 );
 
 select * from aws_lambda_functions where runtime like 'python%';
+
+-- Get specific function details
+create foreign table my_function_details (
+  function_name text,
+  runtime text,
+  handler text,
+  code_size bigint,
+  last_modified timestamp,
+  state text
+)
+server aws_server
+options (
+  service 'lambda',
+  object 'function',
+  function_name 'my-function'
+);
+
+select * from my_function_details;
 ```
 
 ### CloudWatch Examples
@@ -409,53 +387,39 @@ where timestamp > now() - interval '1 hour';
 
 ## Implementation Tasks
 
-### Phase 1: Foundation
+### Phase 1: Complete Implementation
 
+#### Foundation
 - [ ] Set up project structure (Cargo.toml, wit/world.wit)
 - [ ] Implement AWS Signature V4 authentication
 - [ ] Create base AWS HTTP client using WIT http interface
 - [ ] Implement FDW lifecycle methods (init, begin_scan, iter_scan, end_scan)
 - [ ] Add error handling and reporting via WIT utils
 
-### Phase 2: S3 Service
-
+#### S3 Service
 - [ ] Implement ListBuckets
 - [ ] Implement ListObjectsV2 with prefix filtering
 - [ ] Implement HeadObject for metadata
 - [ ] Add pagination support for large result sets
-- [ ] Write unit tests
 
-### Phase 3: DynamoDB Service
-
-- [ ] Implement ListTables
-- [ ] Implement Scan operation
-- [ ] Implement Query operation with key conditions
-- [ ] Handle DynamoDB type conversions to PostgreSQL types
-- [ ] Add pagination support
-
-### Phase 4: Lambda Service
-
+#### Lambda Service
 - [ ] Implement ListFunctions
 - [ ] Implement GetFunction for details
-- [ ] Implement Invoke for function execution
-- [ ] Handle async invocation responses
+- [ ] Add pagination support
 
-### Phase 5: CloudWatch Service
-
+#### CloudWatch Service
 - [ ] Implement ListMetrics
 - [ ] Implement GetMetricData
 - [ ] Add time range filtering
 - [ ] Support metric statistics (Average, Sum, etc.)
 
-### Phase 6: Testing & Documentation
-
+#### Testing & Documentation
 - [ ] Integration tests with LocalStack
 - [ ] Documentation for each service
 - [ ] Example SQL scripts
 - [ ] Performance benchmarking
 
-### Phase 7: Release
-
+#### Release
 - [ ] Build WASM component
 - [ ] Calculate SHA256 checksum
 - [ ] Create GitHub release
@@ -475,6 +439,7 @@ where timestamp > now() - interval '1 hour';
 1. **Credentials**: Support Vault secrets for secure credential storage
 2. **Minimal Permissions**: Document IAM policies with least-privilege access
 3. **No Credential Logging**: Never log or expose credentials in errors
+4. **Read-Only Design**: No write operations to minimize blast radius
 
 ### Performance
 
@@ -505,8 +470,9 @@ where timestamp > now() - interval '1 hour';
 
 ## Success Criteria
 
-1. All Phase 1 services (S3, DynamoDB, Lambda, CloudWatch) working
+1. All services (S3, Lambda, CloudWatch) working in read-only mode
 2. Proper error handling and user-friendly error messages
 3. Documentation with examples for each service
 4. Integration tests passing
-5. Published to GitHub releases with checksum
+5. Security tests passing (see test-plan.md)
+6. Published to GitHub releases with checksum
