@@ -209,7 +209,54 @@ select count(*) from test_large_bucket_objects;
 | CW-INT-005 | `test_metric_statistics` | Get Average/Sum/etc | Correct statistics |
 | CW-INT-006 | `test_metric_dimensions` | Query with dimensions | Filtered by dimensions |
 
-### 2.4 Error Handling Tests
+### 2.4 Import Foreign Schema Tests
+
+| Test ID | Test Name | Description | Expected Result |
+|---------|-----------|-------------|-----------------|
+| IFS-INT-001 | `test_import_s3_schema` | Import S3 schema | Creates buckets, objects tables |
+| IFS-INT-002 | `test_import_lambda_schema` | Import Lambda schema | Creates functions table |
+| IFS-INT-003 | `test_import_cloudwatch_schema` | Import CloudWatch schema | Creates metrics, metric_data tables |
+| IFS-INT-004 | `test_import_all_schema` | Import all services | Creates all tables |
+| IFS-INT-005 | `test_import_limit_to` | Import with LIMIT TO | Only specified tables created |
+| IFS-INT-006 | `test_import_except` | Import with EXCEPT | All except specified tables |
+| IFS-INT-007 | `test_import_unknown_schema` | Import invalid schema name | Clear error message |
+| IFS-INT-008 | `test_import_idempotent` | Run import twice | No errors (IF NOT EXISTS) |
+| IFS-INT-009 | `test_imported_tables_queryable` | Query imported tables | Returns valid data |
+| IFS-INT-010 | `test_import_into_custom_schema` | Import into non-public schema | Tables in correct schema |
+
+```sql
+-- IFS-INT-001: Import S3 schema
+import foreign schema s3 from server aws_test_server into test_schema;
+
+-- Verify tables created
+select count(*) from information_schema.tables
+where table_schema = 'test_schema' and table_name in ('buckets', 'objects');
+-- Expected: 2
+
+-- IFS-INT-004: Import all services
+import foreign schema all from server aws_test_server into aws_all;
+
+-- Verify all tables created
+select count(*) from information_schema.tables
+where table_schema = 'aws_all';
+-- Expected: 5 (buckets, objects, functions, metrics, metric_data)
+
+-- IFS-INT-005: Import with LIMIT TO
+import foreign schema s3 limit to (buckets) from server aws_test_server into aws_limited;
+
+select count(*) from information_schema.tables
+where table_schema = 'aws_limited';
+-- Expected: 1 (only buckets)
+
+-- IFS-INT-006: Import with EXCEPT
+import foreign schema cloudwatch except (metric_data) from server aws_test_server into aws_except;
+
+select table_name from information_schema.tables
+where table_schema = 'aws_except';
+-- Expected: metrics (not metric_data)
+```
+
+### 2.5 Error Handling Tests
 
 | Test ID | Test Name | Description | Expected Result |
 |---------|-----------|-------------|-----------------|

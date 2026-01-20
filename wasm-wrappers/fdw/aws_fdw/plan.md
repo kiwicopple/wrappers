@@ -385,6 +385,145 @@ select * from ec2_cpu_utilization
 where timestamp > now() - interval '1 hour';
 ```
 
+## Import Foreign Schema
+
+The `IMPORT FOREIGN SCHEMA` command allows automatic creation of all foreign tables for a service with a single command, instead of manually defining each table.
+
+### How It Works
+
+1. User runs `IMPORT FOREIGN SCHEMA <service> FROM SERVER <server> INTO <schema>`
+2. FDW returns a list of `CREATE FOREIGN TABLE` statements
+3. PostgreSQL executes these statements to create the tables
+
+### Supported Schemas
+
+The `remote_schema` parameter maps to AWS services:
+
+| Remote Schema | Tables Created |
+|---------------|----------------|
+| `s3` | `buckets`, `objects` |
+| `lambda` | `functions` |
+| `cloudwatch` | `metrics`, `metric_data` |
+| `all` | All tables from all services |
+
+### Table Definitions
+
+#### S3 Tables
+
+```sql
+-- s3_buckets
+create foreign table if not exists s3_buckets (
+    name text,
+    creation_date timestamp
+)
+server {server_name} options (service 's3', object 'buckets');
+
+-- s3_objects (requires bucket option at query time via WHERE or separate table)
+create foreign table if not exists s3_objects (
+    key text,
+    size bigint,
+    last_modified timestamp,
+    etag text,
+    storage_class text
+)
+server {server_name} options (service 's3', object 'objects');
+```
+
+#### Lambda Tables
+
+```sql
+-- lambda_functions
+create foreign table if not exists lambda_functions (
+    function_name text,
+    runtime text,
+    handler text,
+    memory_size int,
+    timeout int,
+    last_modified timestamp,
+    description text,
+    state text,
+    attrs jsonb
+)
+server {server_name} options (service 'lambda', object 'functions');
+```
+
+#### CloudWatch Tables
+
+```sql
+-- cloudwatch_metrics
+create foreign table if not exists cloudwatch_metrics (
+    namespace text,
+    metric_name text,
+    dimensions jsonb
+)
+server {server_name} options (service 'cloudwatch', object 'metrics');
+
+-- cloudwatch_metric_data
+create foreign table if not exists cloudwatch_metric_data (
+    timestamp timestamptz,
+    value float8,
+    unit text,
+    label text
+)
+server {server_name} options (service 'cloudwatch', object 'metric_data');
+```
+
+### SQL Usage Examples
+
+```sql
+-- Import all S3 tables
+import foreign schema s3 from server aws_server into aws;
+
+-- Import all Lambda tables
+import foreign schema lambda from server aws_server into aws;
+
+-- Import all CloudWatch tables
+import foreign schema cloudwatch from server aws_server into aws;
+
+-- Import everything from all services
+import foreign schema all from server aws_server into aws;
+
+-- Import only specific tables (LIMIT TO)
+import foreign schema s3 limit to (buckets) from server aws_server into aws;
+
+-- Import all except specific tables (EXCEPT)
+import foreign schema lambda except (function_details) from server aws_server into aws;
+```
+
+### Implementation Details
+
+```rust
+fn import_foreign_schema(
+    _ctx: &Context,
+    stmt: ImportForeignSchemaStmt,
+) -> Result<Vec<String>, FdwError> {
+    // Define available tables per service
+    let s3_tables = vec!["buckets", "objects"];
+    let lambda_tables = vec!["functions"];
+    let cloudwatch_tables = vec!["metrics", "metric_data"];
+
+    // Determine which service(s) to import based on remote_schema
+    let tables_to_create = match stmt.remote_schema.as_str() {
+        "s3" => get_s3_ddl(&stmt),
+        "lambda" => get_lambda_ddl(&stmt),
+        "cloudwatch" => get_cloudwatch_ddl(&stmt),
+        "all" => {
+            let mut all = get_s3_ddl(&stmt);
+            all.extend(get_lambda_ddl(&stmt));
+            all.extend(get_cloudwatch_ddl(&stmt));
+            all
+        }
+        _ => return Err(FdwError::new(&format!(
+            "Unknown schema '{}'. Use: s3, lambda, cloudwatch, or all",
+            stmt.remote_schema
+        ))),
+    };
+
+    // Apply LIMIT TO / EXCEPT filtering
+    filter_tables(tables_to_create, &stmt.list_type, &stmt.table_list)
+}
+```
+
 ## Implementation Tasks
 
 ### Phase 1: Complete Implementation
@@ -412,6 +551,15 @@ where timestamp > now() - interval '1 hour';
 - [ ] Implement GetMetricData
 - [ ] Add time range filtering
 - [ ] Support metric statistics (Average, Sum, etc.)
+
+#### Import Foreign Schema
+- [ ] Implement `import_foreign_schema` function
+- [ ] Define table schemas for S3 (buckets, objects)
+- [ ] Define table schemas for Lambda (functions)
+- [ ] Define table schemas for CloudWatch (metrics, metric_data)
+- [ ] Support `all` schema to import all services
+- [ ] Handle LIMIT TO filtering
+- [ ] Handle EXCEPT filtering
 
 #### Testing & Documentation
 - [ ] Integration tests with LocalStack
@@ -471,8 +619,9 @@ where timestamp > now() - interval '1 hour';
 ## Success Criteria
 
 1. All services (S3, Lambda, CloudWatch) working in read-only mode
-2. Proper error handling and user-friendly error messages
-3. Documentation with examples for each service
-4. Integration tests passing
-5. Security tests passing (see test-plan.md)
-6. Published to GitHub releases with checksum
+2. `IMPORT FOREIGN SCHEMA` working for all services
+3. Proper error handling and user-friendly error messages
+4. Documentation with examples for each service
+5. Integration tests passing
+6. Security tests passing (see test-plan.md)
+7. Published to GitHub releases with checksum
