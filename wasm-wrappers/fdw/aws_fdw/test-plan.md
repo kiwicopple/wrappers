@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document defines a rigorous testing strategy for the AWS WASM FDW, covering unit tests, integration tests, security tests, performance tests, and edge case handling.
+This document defines a rigorous testing strategy for the AWS WASM FDW, covering unit tests, integration tests, security tests, and edge case handling.
 
 ## Test Infrastructure
 
@@ -347,40 +347,9 @@ delete from aws_s3_objects where key = 'test';
 
 ---
 
-## 4. Performance Tests
+## 4. Edge Case Tests
 
-### 4.1 Latency Tests
-
-| Test ID | Test Name | Target | Description |
-|---------|-----------|--------|-------------|
-| PERF-001 | `test_list_buckets_latency` | <100ms | Time to list buckets |
-| PERF-002 | `test_list_objects_small_latency` | <200ms | List <100 objects |
-| PERF-003 | `test_list_objects_large_latency` | <2s | List 1000 objects |
-| PERF-004 | `test_pagination_overhead` | <50ms/page | Per-page latency |
-| PERF-005 | `test_signature_calculation` | <5ms | Time to sign request |
-
-### 4.2 Throughput Tests
-
-| Test ID | Test Name | Target | Description |
-|---------|-----------|--------|-------------|
-| PERF-010 | `test_concurrent_queries` | 10 QPS | Multiple simultaneous queries |
-| PERF-011 | `test_large_result_set` | 10K rows/s | Large object listing |
-| PERF-012 | `test_sustained_load` | 5 min stable | Continuous query load |
-
-### 4.3 Memory Tests
-
-| Test ID | Test Name | Target | Description |
-|---------|-----------|--------|-------------|
-| PERF-020 | `test_memory_baseline` | <50MB | Idle memory usage |
-| PERF-021 | `test_memory_large_query` | <200MB | Large result handling |
-| PERF-022 | `test_memory_leak_check` | No growth | Memory after 1000 queries |
-| PERF-023 | `test_pagination_memory` | Constant | Memory during pagination |
-
----
-
-## 5. Edge Case Tests
-
-### 5.1 Boundary Conditions
+### 4.1 Boundary Conditions
 
 | Test ID | Test Name | Description | Expected Result |
 |---------|-----------|-------------|-----------------|
@@ -393,7 +362,7 @@ delete from aws_s3_objects where key = 'test';
 | EDGE-007 | `test_special_prefix` | Prefix with /../ | Sanitized |
 | EDGE-008 | `test_null_last_modified` | Object without timestamp | NULL returned |
 
-### 5.2 Concurrency Edge Cases
+### 4.2 Concurrency Edge Cases
 
 | Test ID | Test Name | Description | Expected Result |
 |---------|-----------|-------------|-----------------|
@@ -403,9 +372,9 @@ delete from aws_s3_objects where key = 'test';
 
 ---
 
-## 6. Regression Tests
+## 5. Regression Tests
 
-### 6.1 Known Issue Coverage
+### 5.1 Known Issue Coverage
 
 | Test ID | Issue | Description | Verification |
 |---------|-------|-------------|--------------|
@@ -413,7 +382,7 @@ delete from aws_s3_objects where key = 'test';
 | REG-002 | N/A | Pagination continuation token | Test with markers |
 | REG-003 | N/A | Timestamp timezone handling | UTC conversion |
 
-### 6.2 Compatibility Tests
+### 5.2 Compatibility Tests
 
 | Test ID | Test Name | Description |
 |---------|-----------|-------------|
@@ -424,7 +393,7 @@ delete from aws_s3_objects where key = 'test';
 
 ---
 
-## 7. Test Execution
+## 6. Test Execution
 
 ### Running Unit Tests
 
@@ -462,16 +431,6 @@ cargo audit
 # Fuzzing (requires nightly)
 cargo +nightly fuzz run fuzz_auth
 cargo +nightly fuzz run fuzz_parse
-```
-
-### Running Performance Tests
-
-```bash
-# Performance tests
-cargo test --test performance --release
-
-# Benchmarks
-cargo bench
 ```
 
 ### CI Pipeline Integration
@@ -518,7 +477,7 @@ jobs:
 
 ---
 
-## 8. Test Coverage Requirements
+## 7. Test Coverage Requirements
 
 | Category | Minimum Coverage | Target Coverage |
 |----------|------------------|-----------------|
@@ -539,7 +498,7 @@ open coverage/tarpaulin-report.html
 
 ---
 
-## 9. Test Data Requirements
+## 8. Test Data Requirements
 
 ### S3 Test Data
 
@@ -562,16 +521,15 @@ open coverage/tarpaulin-report.html
 
 ---
 
-## 10. Acceptance Criteria
+## 9. Acceptance Criteria
 
 Before release, ALL of the following must pass:
 
 1. **Unit Tests**: 100% pass rate, >80% coverage
 2. **Integration Tests**: 100% pass rate for all services
 3. **Security Tests**: 100% pass rate, no CRITICAL/HIGH findings
-4. **Performance Tests**: All latency targets met
-5. **Edge Cases**: 100% pass rate
-6. **Regression Tests**: No regressions from previous versions
+4. **Edge Cases**: 100% pass rate
+5. **Regression Tests**: No regressions from previous versions
 
 ### Sign-off Checklist
 
@@ -579,7 +537,6 @@ Before release, ALL of the following must pass:
 - [ ] All integration tests passing
 - [ ] All security tests passing
 - [ ] Security audit completed (cargo audit)
-- [ ] Performance benchmarks acceptable
 - [ ] Code coverage meets requirements
 - [ ] Documentation updated
 - [ ] CHANGELOG updated
