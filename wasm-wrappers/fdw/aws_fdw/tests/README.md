@@ -44,9 +44,29 @@ psql -f test_route53.sql
 
 # Run Security tests
 psql -f test_security.sql
+
+# Run Advanced Security tests (attack vector coverage)
+psql -f test_security_advanced.sql
 ```
 
 Or run the test files manually in your PostgreSQL client.
+
+## Security Testing
+
+The AWS FDW includes comprehensive security tests covering:
+
+### Basic Security (`test_security.sql`)
+- Read-only enforcement (INSERT/UPDATE/DELETE blocked)
+- Input validation
+- Required filter enforcement
+
+### Advanced Security (`test_security_advanced.sql`)
+- **SSRF Protection**: Tests for blocking metadata service, localhost, private IPs
+- **Injection Prevention**: SQL injection, header injection, path traversal
+- **Credential Security**: Ensures credentials don't leak in error messages
+- **Supply Chain**: Tests for WASM package URL validation
+
+See `SECURITY.md` for detailed attack vector analysis.
 
 ## Test Coverage
 

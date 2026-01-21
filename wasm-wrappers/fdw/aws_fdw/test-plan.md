@@ -392,6 +392,25 @@ delete from aws_s3_objects where key = 'test';
 | SEC-044 | `test_no_private_ip_endpoints` | HIGH | Block private IP ranges | 10.x, 192.168.x blocked |
 | SEC-045 | `test_dns_rebinding` | MEDIUM | DNS rebinding protection | Pinned DNS resolution |
 
+### 3.6 SSRF Prevention Tests
+
+| Test ID | Test Name | Severity | Description | Expected Result |
+|---------|-----------|----------|-------------|-----------------|
+| SSRF-001 | `test_block_metadata_ip` | CRITICAL | Block 169.254.169.254 | Connection refused/blocked |
+| SSRF-002 | `test_block_localhost` | CRITICAL | Block 127.0.0.1 | Connection refused/blocked |
+| SSRF-003 | `test_block_private_10` | HIGH | Block 10.x.x.x range | Connection refused/blocked |
+| SSRF-004 | `test_block_private_172` | HIGH | Block 172.16-31.x.x | Connection refused/blocked |
+| SSRF-005 | `test_block_private_192` | HIGH | Block 192.168.x.x | Connection refused/blocked |
+| SSRF-006 | `test_block_ipv6_local` | HIGH | Block ::1 and fe80:: | Connection refused/blocked |
+
+### 3.7 Supply Chain Security Tests
+
+| Test ID | Test Name | Severity | Description | Expected Result |
+|---------|-----------|----------|-------------|-----------------|
+| SUPPLY-001 | `test_require_checksum` | CRITICAL | WASM without checksum | Rejected |
+| SUPPLY-002 | `test_invalid_checksum` | CRITICAL | Wrong checksum | Rejected |
+| SUPPLY-003 | `test_untrusted_url` | HIGH | Non-allowlisted URL | Rejected or warned |
+
 ---
 
 ## 4. Edge Case Tests
