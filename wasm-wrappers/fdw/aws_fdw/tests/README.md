@@ -70,20 +70,23 @@ Or run the test files manually in your PostgreSQL client.
 
 ## Security Testing
 
-The AWS FDW includes comprehensive security tests covering:
+The AWS FDW includes comprehensive security tests covering AWS-specific concerns.
+
+For platform-wide security tests (supply chain, credential masking), see `/wasm-wrappers/tests/`.
 
 ### Basic Security (`test_security.sql`)
 - Read-only enforcement (INSERT/UPDATE/DELETE blocked)
 - Input validation
 - Required filter enforcement
 
-### Advanced Security (`test_security_advanced.sql`)
-- **SSRF Protection**: Tests for blocking metadata service, localhost, private IPs
-- **Injection Prevention**: SQL injection, header injection, path traversal
-- **Credential Security**: Ensures credentials don't leak in error messages
-- **Supply Chain**: Tests for WASM package URL validation
+### AWS-Specific Security (`test_security_advanced.sql`)
+- **SSRF Protection**: Tests for blocking metadata service, localhost, private IPs via `endpoint_url`
+- **AWS Input Validation**: SQL injection, header injection in S3 requests
+- **AWS Credential Masking**: Ensures AWS credentials don't leak in error messages
+- **Read-Only Enforcement**: Confirms write operations are blocked
 
-See `SECURITY.md` for detailed attack vector analysis.
+See `SECURITY.md` for detailed AWS-specific attack vector analysis.
+See `/SECURITY.md` for platform-wide security documentation.
 
 ## Test Coverage
 

