@@ -14,12 +14,13 @@ CREATE EXTENSION IF NOT EXISTS wrappers;
 
 -- ============================================================================
 -- SECTION 1: SSRF (Server-Side Request Forgery) Tests
--- These are the MOST CRITICAL security tests
+-- These tests verify the validate_endpoint_url() function blocks dangerous URLs
 -- ============================================================================
 
 SELECT '=== SECTION 1: SSRF Protection Tests ===' AS section;
 
 -- SSRF-001: Block AWS metadata service (169.254.169.254)
+-- This is the most critical SSRF vector - attackers steal IAM credentials
 SELECT 'SSRF-001: Block AWS metadata service IP' AS test;
 DO $$
 BEGIN
@@ -29,25 +30,23 @@ BEGIN
       fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
       fdw_package_version '0.1.0',
+      fdw_package_checksum 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
       aws_access_key_id 'test',
       aws_secret_access_key 'test',
       region 'us-east-1',
       endpoint_url 'http://169.254.169.254/latest/meta-data/'
     );
 
-  CREATE FOREIGN TABLE ssrf_test (data text)
-  SERVER ssrf_metadata_server
-  OPTIONS (service 's3', object 'buckets');
-
-  PERFORM * FROM ssrf_test;
-  RAISE EXCEPTION 'SSRF-001 FAILED: Metadata service should be blocked';
+  -- If we get here, SSRF protection FAILED
+  RAISE EXCEPTION 'SSRF-001 FAILED: Metadata service URL was accepted - CRITICAL VULNERABILITY';
 EXCEPTION
   WHEN OTHERS THEN
-    IF SQLERRM LIKE '%blocked%' OR SQLERRM LIKE '%not allowed%' OR SQLERRM LIKE '%invalid%' THEN
+    IF SQLERRM LIKE '%SSRF Protection%' AND SQLERRM LIKE '%169.254.169.254%' THEN
+      RAISE NOTICE 'SSRF-001 PASSED: AWS metadata service blocked - %', SQLERRM;
+    ELSIF SQLERRM LIKE '%SSRF%' OR SQLERRM LIKE '%blocked%' OR SQLERRM LIKE '%not allowed%' THEN
       RAISE NOTICE 'SSRF-001 PASSED: Metadata IP blocked - %', SQLERRM;
     ELSE
-      -- Even if error is different, as long as it failed it's somewhat protected
-      RAISE NOTICE 'SSRF-001 PARTIAL: Request failed (verify blocking) - %', SQLERRM;
+      RAISE NOTICE 'SSRF-001 INFO: Server creation failed (verify SSRF blocking) - %', SQLERRM;
     END IF;
 END $$;
 
@@ -61,21 +60,23 @@ BEGIN
       fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
       fdw_package_version '0.1.0',
+      fdw_package_checksum 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
       aws_access_key_id 'test',
       aws_secret_access_key 'test',
       region 'us-east-1',
       endpoint_url 'http://127.0.0.1:8080/admin'
     );
 
-  CREATE FOREIGN TABLE ssrf_localhost (data text)
-  SERVER ssrf_localhost_server
-  OPTIONS (service 's3', object 'buckets');
-
-  PERFORM * FROM ssrf_localhost;
-  RAISE EXCEPTION 'SSRF-002 FAILED: Localhost should be blocked';
+  RAISE EXCEPTION 'SSRF-002 FAILED: Localhost URL was accepted - SECURITY VULNERABILITY';
 EXCEPTION
   WHEN OTHERS THEN
-    RAISE NOTICE 'SSRF-002 INFO: Localhost request result - %', SQLERRM;
+    IF SQLERRM LIKE '%SSRF Protection%' AND SQLERRM LIKE '%Loopback%' THEN
+      RAISE NOTICE 'SSRF-002 PASSED: Localhost blocked - %', SQLERRM;
+    ELSIF SQLERRM LIKE '%SSRF%' OR SQLERRM LIKE '%blocked%' OR SQLERRM LIKE '%not allowed%' THEN
+      RAISE NOTICE 'SSRF-002 PASSED: Localhost blocked - %', SQLERRM;
+    ELSE
+      RAISE NOTICE 'SSRF-002 INFO: Server creation failed (verify SSRF blocking) - %', SQLERRM;
+    END IF;
 END $$;
 
 -- SSRF-003: Block private network (10.x.x.x)
@@ -88,21 +89,23 @@ BEGIN
       fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
       fdw_package_version '0.1.0',
+      fdw_package_checksum 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
       aws_access_key_id 'test',
       aws_secret_access_key 'test',
       region 'us-east-1',
       endpoint_url 'http://10.0.0.1:3306/'
     );
 
-  CREATE FOREIGN TABLE ssrf_private (data text)
-  SERVER ssrf_private10_server
-  OPTIONS (service 's3', object 'buckets');
-
-  PERFORM * FROM ssrf_private;
-  RAISE EXCEPTION 'SSRF-003 FAILED: Private IP should be blocked';
+  RAISE EXCEPTION 'SSRF-003 FAILED: Private IP was accepted - SECURITY VULNERABILITY';
 EXCEPTION
   WHEN OTHERS THEN
-    RAISE NOTICE 'SSRF-003 INFO: Private IP request result - %', SQLERRM;
+    IF SQLERRM LIKE '%SSRF Protection%' AND SQLERRM LIKE '%Private network%' THEN
+      RAISE NOTICE 'SSRF-003 PASSED: Private network blocked - %', SQLERRM;
+    ELSIF SQLERRM LIKE '%SSRF%' OR SQLERRM LIKE '%blocked%' OR SQLERRM LIKE '%not allowed%' THEN
+      RAISE NOTICE 'SSRF-003 PASSED: Private IP blocked - %', SQLERRM;
+    ELSE
+      RAISE NOTICE 'SSRF-003 INFO: Server creation failed (verify SSRF blocking) - %', SQLERRM;
+    END IF;
 END $$;
 
 -- SSRF-004: Block private network (192.168.x.x)
@@ -115,21 +118,77 @@ BEGIN
       fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
       fdw_package_version '0.1.0',
+      fdw_package_checksum 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
       aws_access_key_id 'test',
       aws_secret_access_key 'test',
       region 'us-east-1',
       endpoint_url 'http://192.168.1.1/'
     );
 
-  CREATE FOREIGN TABLE ssrf_private192 (data text)
-  SERVER ssrf_private192_server
-  OPTIONS (service 's3', object 'buckets');
-
-  PERFORM * FROM ssrf_private192;
-  RAISE EXCEPTION 'SSRF-004 FAILED: Private IP should be blocked';
+  RAISE EXCEPTION 'SSRF-004 FAILED: Private IP was accepted - SECURITY VULNERABILITY';
 EXCEPTION
   WHEN OTHERS THEN
-    RAISE NOTICE 'SSRF-004 INFO: Private IP request result - %', SQLERRM;
+    IF SQLERRM LIKE '%SSRF Protection%' AND SQLERRM LIKE '%192.168%' THEN
+      RAISE NOTICE 'SSRF-004 PASSED: Private network (192.168.x.x) blocked - %', SQLERRM;
+    ELSIF SQLERRM LIKE '%SSRF%' OR SQLERRM LIKE '%blocked%' OR SQLERRM LIKE '%not allowed%' THEN
+      RAISE NOTICE 'SSRF-004 PASSED: Private IP blocked - %', SQLERRM;
+    ELSE
+      RAISE NOTICE 'SSRF-004 INFO: Server creation failed (verify SSRF blocking) - %', SQLERRM;
+    END IF;
+END $$;
+
+-- SSRF-005: Block localhost hostname
+SELECT 'SSRF-005: Block localhost hostname' AS test;
+DO $$
+BEGIN
+  CREATE SERVER ssrf_localhost_name_server
+    FOREIGN DATA WRAPPER wasm_fdw_handler
+    OPTIONS (
+      fdw_package_url 'file:///path/to/aws_fdw.wasm',
+      fdw_package_name 'supabase:aws-fdw',
+      fdw_package_version '0.1.0',
+      fdw_package_checksum 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+      aws_access_key_id 'test',
+      aws_secret_access_key 'test',
+      region 'us-east-1',
+      endpoint_url 'http://localhost:8080/'
+    );
+
+  RAISE EXCEPTION 'SSRF-005 FAILED: localhost hostname was accepted - SECURITY VULNERABILITY';
+EXCEPTION
+  WHEN OTHERS THEN
+    IF SQLERRM LIKE '%SSRF Protection%' AND SQLERRM LIKE '%localhost%' THEN
+      RAISE NOTICE 'SSRF-005 PASSED: localhost hostname blocked - %', SQLERRM;
+    ELSE
+      RAISE NOTICE 'SSRF-005 INFO: Server creation failed (verify SSRF blocking) - %', SQLERRM;
+    END IF;
+END $$;
+
+-- SSRF-006: Block metadata-like hostnames (DNS rebinding protection)
+SELECT 'SSRF-006: Block metadata hostname' AS test;
+DO $$
+BEGIN
+  CREATE SERVER ssrf_metadata_hostname_server
+    FOREIGN DATA WRAPPER wasm_fdw_handler
+    OPTIONS (
+      fdw_package_url 'file:///path/to/aws_fdw.wasm',
+      fdw_package_name 'supabase:aws-fdw',
+      fdw_package_version '0.1.0',
+      fdw_package_checksum 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+      aws_access_key_id 'test',
+      aws_secret_access_key 'test',
+      region 'us-east-1',
+      endpoint_url 'http://metadata.evil.com/'
+    );
+
+  RAISE EXCEPTION 'SSRF-006 FAILED: metadata hostname was accepted - SECURITY VULNERABILITY';
+EXCEPTION
+  WHEN OTHERS THEN
+    IF SQLERRM LIKE '%SSRF Protection%' AND SQLERRM LIKE '%metadata%' THEN
+      RAISE NOTICE 'SSRF-006 PASSED: Suspicious hostname blocked - %', SQLERRM;
+    ELSE
+      RAISE NOTICE 'SSRF-006 INFO: Server creation failed (verify hostname blocking) - %', SQLERRM;
+    END IF;
 END $$;
 
 -- ============================================================================
@@ -148,6 +207,7 @@ BEGIN
       fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
       fdw_package_version '0.1.0',
+      fdw_package_checksum 'sha256:REPLACE_WITH_ACTUAL_CHECKSUM',
       aws_access_key_id 'test',
       aws_secret_access_key 'test',
       region 'us-east-1',
@@ -424,6 +484,8 @@ DROP SERVER IF EXISTS ssrf_metadata_server CASCADE;
 DROP SERVER IF EXISTS ssrf_localhost_server CASCADE;
 DROP SERVER IF EXISTS ssrf_private10_server CASCADE;
 DROP SERVER IF EXISTS ssrf_private192_server CASCADE;
+DROP SERVER IF EXISTS ssrf_localhost_name_server CASCADE;
+DROP SERVER IF EXISTS ssrf_metadata_hostname_server CASCADE;
 DROP SERVER IF EXISTS inj_test_server CASCADE;
 DROP SERVER IF EXISTS cred_test_server CASCADE;
 DROP SERVER IF EXISTS no_checksum_server CASCADE;

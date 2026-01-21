@@ -331,6 +331,224 @@ fn find_json_array_end(json: &str) -> Option<usize> {
 }
 
 // ============================================================================
+// SSRF Protection - Security validation for endpoint URLs
+// ============================================================================
+
+/// Validates that an endpoint URL is safe and not targeting internal/private resources.
+/// This prevents Server-Side Request Forgery (SSRF) attacks.
+///
+/// Blocked addresses:
+/// - AWS metadata service: 169.254.169.254
+/// - Localhost: 127.0.0.0/8, localhost, [::1]
+/// - Private networks: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+/// - Link-local: 169.254.0.0/16 (except metadata already blocked)
+/// - IPv6 link-local: fe80::/10
+fn validate_endpoint_url(url: &str) -> Result<(), String> {
+    // Extract host from URL
+    let host = extract_host_from_url(url)?;
+    let host_lower = host.to_lowercase();
+
+    // Block localhost variations
+    if host_lower == "localhost" || host_lower == "localhost." {
+        return Err(format!(
+            "SSRF Protection: localhost is not allowed as endpoint_url. Got: {}",
+            url
+        ));
+    }
+
+    // Check if it's an IP address
+    if let Some(ip_result) = parse_ipv4(&host) {
+        validate_ipv4(ip_result, url)?;
+    } else if host.starts_with('[') && host.ends_with(']') {
+        // IPv6 address in brackets [::1]
+        let ipv6 = &host[1..host.len()-1];
+        validate_ipv6(ipv6, url)?;
+    } else if host.contains(':') {
+        // IPv6 without brackets (unlikely in URL but check anyway)
+        validate_ipv6(&host, url)?;
+    }
+
+    // Also check for DNS rebinding bypass attempts
+    // Block any host containing "metadata", "169.254", "internal"
+    if host_lower.contains("metadata") ||
+       host_lower.contains("169.254") ||
+       host_lower.contains("instance-data") {
+        return Err(format!(
+            "SSRF Protection: Suspicious hostname blocked (potential metadata access). Got: {}",
+            url
+        ));
+    }
+
+    Ok(())
+}
+
+/// Extract the host portion from a URL
+fn extract_host_from_url(url: &str) -> Result<String, String> {
+    // Remove scheme
+    let without_scheme = if let Some(pos) = url.find("://") {
+        &url[pos + 3..]
+    } else {
+        return Err(format!("Invalid URL format (missing scheme): {}", url));
+    };
+
+    // Extract host (before first / or end of string)
+    let host_end = without_scheme.find('/').unwrap_or(without_scheme.len());
+    let host_with_port = &without_scheme[..host_end];
+
+    // Remove port if present (handle IPv6 addresses in brackets)
+    let host = if host_with_port.starts_with('[') {
+        // IPv6: [::1]:8080 -> [::1]
+        if let Some(bracket_end) = host_with_port.find(']') {
+            &host_with_port[..bracket_end + 1]
+        } else {
+            host_with_port
+        }
+    } else {
+        // IPv4 or hostname: remove port after last colon
+        // But be careful with IPv6 without brackets
+        if let Some(colon_pos) = host_with_port.rfind(':') {
+            // Check if everything after colon is digits (port)
+            let after_colon = &host_with_port[colon_pos + 1..];
+            if after_colon.chars().all(|c| c.is_ascii_digit()) {
+                &host_with_port[..colon_pos]
+            } else {
+                host_with_port
+            }
+        } else {
+            host_with_port
+        }
+    };
+
+    if host.is_empty() {
+        return Err(format!("Invalid URL format (empty host): {}", url));
+    }
+
+    Ok(host.to_string())
+}
+
+/// Parse an IPv4 address into octets
+fn parse_ipv4(host: &str) -> Option<[u8; 4]> {
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+
+    let mut octets = [0u8; 4];
+    for (i, part) in parts.iter().enumerate() {
+        match part.parse::<u8>() {
+            Ok(n) => octets[i] = n,
+            Err(_) => return None,
+        }
+    }
+
+    Some(octets)
+}
+
+/// Validate IPv4 address is not a blocked address
+fn validate_ipv4(octets: [u8; 4], url: &str) -> Result<(), String> {
+    let [a, b, c, d] = octets;
+
+    // Loopback: 127.0.0.0/8
+    if a == 127 {
+        return Err(format!(
+            "SSRF Protection: Loopback addresses (127.x.x.x) are not allowed. Got: {}",
+            url
+        ));
+    }
+
+    // AWS Metadata Service: 169.254.169.254
+    if a == 169 && b == 254 && c == 169 && d == 254 {
+        return Err(format!(
+            "SSRF Protection: AWS metadata service (169.254.169.254) is blocked. Got: {}",
+            url
+        ));
+    }
+
+    // Link-local: 169.254.0.0/16
+    if a == 169 && b == 254 {
+        return Err(format!(
+            "SSRF Protection: Link-local addresses (169.254.x.x) are not allowed. Got: {}",
+            url
+        ));
+    }
+
+    // Private network: 10.0.0.0/8
+    if a == 10 {
+        return Err(format!(
+            "SSRF Protection: Private network addresses (10.x.x.x) are not allowed. Got: {}",
+            url
+        ));
+    }
+
+    // Private network: 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
+    if a == 172 && (16..=31).contains(&b) {
+        return Err(format!(
+            "SSRF Protection: Private network addresses (172.16-31.x.x) are not allowed. Got: {}",
+            url
+        ));
+    }
+
+    // Private network: 192.168.0.0/16
+    if a == 192 && b == 168 {
+        return Err(format!(
+            "SSRF Protection: Private network addresses (192.168.x.x) are not allowed. Got: {}",
+            url
+        ));
+    }
+
+    // Broadcast: 0.0.0.0
+    if a == 0 && b == 0 && c == 0 && d == 0 {
+        return Err(format!(
+            "SSRF Protection: Broadcast address (0.0.0.0) is not allowed. Got: {}",
+            url
+        ));
+    }
+
+    Ok(())
+}
+
+/// Validate IPv6 address is not a blocked address
+fn validate_ipv6(ipv6: &str, url: &str) -> Result<(), String> {
+    let ipv6_lower = ipv6.to_lowercase();
+
+    // Loopback: ::1
+    if ipv6_lower == "::1" || ipv6_lower == "0:0:0:0:0:0:0:1" {
+        return Err(format!(
+            "SSRF Protection: IPv6 loopback (::1) is not allowed. Got: {}",
+            url
+        ));
+    }
+
+    // Unspecified: ::
+    if ipv6_lower == "::" || ipv6_lower == "0:0:0:0:0:0:0:0" {
+        return Err(format!(
+            "SSRF Protection: IPv6 unspecified address (::) is not allowed. Got: {}",
+            url
+        ));
+    }
+
+    // Link-local: fe80::/10
+    if ipv6_lower.starts_with("fe8") || ipv6_lower.starts_with("fe9") ||
+       ipv6_lower.starts_with("fea") || ipv6_lower.starts_with("feb") {
+        return Err(format!(
+            "SSRF Protection: IPv6 link-local addresses (fe80::/10) are not allowed. Got: {}",
+            url
+        ));
+    }
+
+    // IPv4-mapped IPv6 addresses: ::ffff:x.x.x.x
+    if ipv6_lower.starts_with("::ffff:") {
+        // Extract the IPv4 part and validate it
+        let ipv4_part = &ipv6[7..];
+        if let Some(octets) = parse_ipv4(ipv4_part) {
+            validate_ipv4(octets, url)?;
+        }
+    }
+
+    Ok(())
+}
+
+// ============================================================================
 // S3 Data Structures
 // ============================================================================
 
@@ -1220,7 +1438,15 @@ impl Guest for AwsFdw {
         };
 
         this.region = opts.require("region")?;
-        this.endpoint_url = opts.get("endpoint_url");
+
+        // SECURITY: Validate endpoint_url to prevent SSRF attacks
+        this.endpoint_url = match opts.get("endpoint_url") {
+            Some(url) => {
+                validate_endpoint_url(&url)?;
+                Some(url)
+            }
+            None => None,
+        };
 
         stats::inc_stats(FDW_NAME, stats::Metric::CreateTimes, 1);
 
