@@ -331,6 +331,124 @@ fn find_json_array_end(json: &str) -> Option<usize> {
 }
 
 // ============================================================================
+// Security Constants
+// ============================================================================
+
+/// Maximum response size in bytes (10 MB) to prevent DoS via large responses
+const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
+
+// ============================================================================
+// Input Validation - Security validation for user inputs
+// ============================================================================
+
+/// Validates an S3 bucket name follows AWS naming rules.
+/// This prevents potential injection attacks and ensures valid API calls.
+/// AWS bucket naming rules: https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html
+fn validate_bucket_name(bucket: &str) -> Result<(), String> {
+    // Bucket names must be 3-63 characters
+    if bucket.len() < 3 || bucket.len() > 63 {
+        return Err(format!(
+            "Invalid bucket name '{}': must be 3-63 characters long",
+            bucket
+        ));
+    }
+
+    // Must start with a lowercase letter or number
+    let first_char = bucket.chars().next().unwrap();
+    if !first_char.is_ascii_lowercase() && !first_char.is_ascii_digit() {
+        return Err(format!(
+            "Invalid bucket name '{}': must start with lowercase letter or number",
+            bucket
+        ));
+    }
+
+    // Must end with a lowercase letter or number
+    let last_char = bucket.chars().last().unwrap();
+    if !last_char.is_ascii_lowercase() && !last_char.is_ascii_digit() {
+        return Err(format!(
+            "Invalid bucket name '{}': must end with lowercase letter or number",
+            bucket
+        ));
+    }
+
+    // Can only contain lowercase letters, numbers, hyphens, and periods
+    for c in bucket.chars() {
+        if !c.is_ascii_lowercase() && !c.is_ascii_digit() && c != '-' && c != '.' {
+            return Err(format!(
+                "Invalid bucket name '{}': can only contain lowercase letters, numbers, hyphens, and periods",
+                bucket
+            ));
+        }
+    }
+
+    // Cannot have consecutive periods
+    if bucket.contains("..") {
+        return Err(format!(
+            "Invalid bucket name '{}': cannot contain consecutive periods",
+            bucket
+        ));
+    }
+
+    // Cannot be formatted as an IP address
+    if bucket.split('.').count() == 4 {
+        let is_ip = bucket.split('.').all(|part| part.parse::<u8>().is_ok());
+        if is_ip {
+            return Err(format!(
+                "Invalid bucket name '{}': cannot be formatted as an IP address",
+                bucket
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validates a Route53 zone ID follows expected format.
+/// Zone IDs are alphanumeric and typically start with 'Z'.
+fn validate_zone_id(zone_id: &str) -> Result<(), String> {
+    // Zone IDs are typically 14-32 alphanumeric characters
+    if zone_id.is_empty() || zone_id.len() > 32 {
+        return Err(format!(
+            "Invalid zone ID '{}': must be 1-32 characters",
+            zone_id
+        ));
+    }
+
+    // Must contain only alphanumeric characters
+    for c in zone_id.chars() {
+        if !c.is_ascii_alphanumeric() {
+            return Err(format!(
+                "Invalid zone ID '{}': must contain only alphanumeric characters",
+                zone_id
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validates input doesn't contain characters that could be used for header injection.
+/// Blocks CRLF sequences that could inject additional HTTP headers.
+fn validate_no_header_injection(value: &str, field_name: &str) -> Result<(), String> {
+    if value.contains('\r') || value.contains('\n') {
+        return Err(format!(
+            "Invalid {}: contains illegal characters (potential header injection)",
+            field_name
+        ));
+    }
+
+    // Also block null bytes
+    if value.contains('\0') {
+        return Err(format!(
+            "Invalid {}: contains null bytes",
+            field_name
+        ));
+    }
+
+    Ok(())
+}
+
+// ============================================================================
 // SSRF Protection - Security validation for endpoint URLs
 // ============================================================================
 
@@ -758,6 +876,15 @@ impl AwsFdw {
         let resp = http::get(&req)?;
         http::error_for_status(&resp)?;
 
+        // Security: Check response size to prevent DoS
+        if resp.body.len() > MAX_RESPONSE_SIZE {
+            return Err(format!(
+                "Response too large ({} bytes). Maximum allowed: {} bytes",
+                resp.body.len(),
+                MAX_RESPONSE_SIZE
+            ));
+        }
+
         stats::inc_stats(FDW_NAME, stats::Metric::BytesIn, resp.body.len() as i64);
 
         Ok(resp.body)
@@ -892,6 +1019,15 @@ impl AwsFdw {
 
         let resp = http::get(&req)?;
         http::error_for_status(&resp)?;
+
+        // Security: Check response size to prevent DoS
+        if resp.body.len() > MAX_RESPONSE_SIZE {
+            return Err(format!(
+                "Response too large ({} bytes). Maximum allowed: {} bytes",
+                resp.body.len(),
+                MAX_RESPONSE_SIZE
+            ));
+        }
 
         stats::inc_stats(FDW_NAME, stats::Metric::BytesIn, resp.body.len() as i64);
 
@@ -1041,6 +1177,15 @@ impl AwsFdw {
         let resp = http::get(&req)?;
         http::error_for_status(&resp)?;
 
+        // Security: Check response size to prevent DoS
+        if resp.body.len() > MAX_RESPONSE_SIZE {
+            return Err(format!(
+                "Response too large ({} bytes). Maximum allowed: {} bytes",
+                resp.body.len(),
+                MAX_RESPONSE_SIZE
+            ));
+        }
+
         stats::inc_stats(FDW_NAME, stats::Metric::BytesIn, resp.body.len() as i64);
 
         Ok(resp.body)
@@ -1167,6 +1312,15 @@ impl AwsFdw {
 
         let resp = http::get(&req)?;
         http::error_for_status(&resp)?;
+
+        // Security: Check response size to prevent DoS
+        if resp.body.len() > MAX_RESPONSE_SIZE {
+            return Err(format!(
+                "Response too large ({} bytes). Maximum allowed: {} bytes",
+                resp.body.len(),
+                MAX_RESPONSE_SIZE
+            ));
+        }
 
         stats::inc_stats(FDW_NAME, stats::Metric::BytesIn, resp.body.len() as i64);
 
@@ -1515,14 +1669,38 @@ impl Guest for AwsFdw {
 
             match field.as_str() {
                 // S3 filters
-                "bucket" => this.bucket = Some(value),
-                "prefix" => this.prefix = Some(value),
+                "bucket" => {
+                    // Security: Validate bucket name format
+                    validate_bucket_name(&value)?;
+                    // Security: Check for header injection
+                    validate_no_header_injection(&value, "bucket name")?;
+                    this.bucket = Some(value);
+                }
+                "prefix" => {
+                    // Security: Check for header injection in prefix
+                    validate_no_header_injection(&value, "prefix")?;
+                    this.prefix = Some(value);
+                }
                 // EC2 filters
-                "instance_id" => this.instance_id = Some(value),
+                "instance_id" => {
+                    // Security: Check for header injection
+                    validate_no_header_injection(&value, "instance_id")?;
+                    this.instance_id = Some(value);
+                }
                 // Lambda filters
-                "function_name" => this.function_name = Some(value),
+                "function_name" => {
+                    // Security: Check for header injection
+                    validate_no_header_injection(&value, "function_name")?;
+                    this.function_name = Some(value);
+                }
                 // Route53 filters
-                "zone_id" => this.zone_id = Some(value),
+                "zone_id" => {
+                    // Security: Validate zone ID format
+                    validate_zone_id(&value)?;
+                    // Security: Check for header injection
+                    validate_no_header_injection(&value, "zone_id")?;
+                    this.zone_id = Some(value);
+                }
                 _ => {}
             }
         }

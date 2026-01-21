@@ -80,13 +80,44 @@ fn extract_xml_value(xml: &str, tag: &str) -> Option<String> {
 
 ### 4. Input Validation
 
-#### Bucket Names
-Bucket names from WHERE clauses are passed to S3 API which handles validation.
+**Status: ✓ MITIGATED**
 
-#### Recommendation (Defense-in-Depth)
-Consider adding pattern validation:
-- Bucket names: `^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`
-- Zone IDs: `^[A-Z0-9]+$`
+Input validation is now enforced for all user-provided filter values:
+
+#### Bucket Names
+The `validate_bucket_name()` function enforces AWS S3 bucket naming rules:
+- Length: 3-63 characters
+- Characters: lowercase letters, numbers, hyphens, periods
+- No consecutive periods
+- Cannot be formatted as IP address
+
+#### Zone IDs
+The `validate_zone_id()` function ensures Route53 zone IDs are valid:
+- Length: 1-32 characters
+- Characters: alphanumeric only
+
+#### Header Injection Protection
+The `validate_no_header_injection()` function blocks:
+- CRLF characters (`\r`, `\n`) that could inject HTTP headers
+- Null bytes (`\0`) that could cause parsing issues
+
+---
+
+### 5. DoS via Large Responses
+
+**Status: ✓ MITIGATED**
+
+Response size is now limited to prevent memory exhaustion:
+
+```rust
+const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024; // 10 MB limit
+```
+
+All HTTP responses are checked before processing:
+- S3 ListBuckets/ListObjects
+- EC2 DescribeInstances
+- Lambda ListFunctions
+- Route53 ListHostedZones/ListResourceRecordSets
 
 ---
 
@@ -108,13 +139,24 @@ On EC2/ECS, prefer instance roles over access keys.
 
 ---
 
-## Open Considerations
+## Security Summary
 
-| Issue | Severity | Notes |
-|-------|----------|-------|
-| DoS via large responses | MEDIUM | No response size limits |
-| Header injection | LOW | URL encoding should prevent |
-| Path traversal | LOW | S3 keys are just strings |
+All identified vulnerabilities have been mitigated:
+
+| Issue | Severity | Status |
+|-------|----------|--------|
+| SSRF via endpoint_url | CRITICAL | ✓ MITIGATED |
+| Read-only enforcement | HIGH | ✓ ENFORCED |
+| DoS via large responses | MEDIUM | ✓ MITIGATED |
+| Input validation | MEDIUM | ✓ MITIGATED |
+| Header injection | LOW | ✓ MITIGATED |
+| XML parsing (XXE) | MEDIUM | ✓ SAFE |
+
+### Residual Risk: Path Traversal
+
+**Status: Acceptable Risk**
+
+S3 treats object keys as literal strings, so path traversal attempts like `../../../etc/passwd` are simply stored/retrieved as literal key names. This is by design and not exploitable.
 
 ---
 

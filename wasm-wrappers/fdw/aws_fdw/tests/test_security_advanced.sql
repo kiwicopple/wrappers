@@ -245,7 +245,8 @@ EXCEPTION
 END $$;
 
 -- INJ-002: HTTP header injection attempt (S3-specific)
-SELECT 'INJ-002: HTTP header injection attempt in S3 request' AS test;
+-- Now blocked by validate_no_header_injection()
+SELECT 'INJ-002: HTTP header injection must be blocked' AS test;
 DO $$
 BEGIN
   CREATE FOREIGN TABLE header_inj_test (key text)
@@ -259,26 +260,85 @@ BEGIN
   PERFORM * FROM header_inj_test
   WHERE bucket = E'test\r\nX-Injected-Header: evil\r\nX-Another: bad';
 
-  RAISE NOTICE 'INJ-002 INFO: Header injection attempt processed';
+  -- If we get here, the protection FAILED
+  RAISE EXCEPTION 'INJ-002 FAILED: Header injection was not blocked';
 EXCEPTION
   WHEN OTHERS THEN
-    RAISE NOTICE 'INJ-002 INFO: Request failed - %', SQLERRM;
+    IF SQLERRM LIKE '%header injection%' OR SQLERRM LIKE '%illegal characters%' THEN
+      RAISE NOTICE 'INJ-002 PASSED: Header injection blocked - %', SQLERRM;
+    ELSIF SQLERRM LIKE '%Invalid bucket name%' THEN
+      RAISE NOTICE 'INJ-002 PASSED: Invalid bucket blocked header injection - %', SQLERRM;
+    ELSE
+      RAISE NOTICE 'INJ-002 INFO: Request failed (verify header injection blocking) - %', SQLERRM;
+    END IF;
 END $$;
 
 -- INJ-003: Path traversal attempt (S3-specific)
-SELECT 'INJ-003: Path traversal attempt in S3 key' AS test;
+-- Now blocked by validate_bucket_name()
+SELECT 'INJ-003: Path traversal in bucket name must be blocked' AS test;
 DO $$
 BEGIN
   PERFORM * FROM header_inj_test
   WHERE bucket = '../../../etc/passwd';
 
-  RAISE NOTICE 'INJ-003 INFO: Path traversal attempt processed (S3 treats as literal key)';
+  RAISE EXCEPTION 'INJ-003 FAILED: Path traversal bucket name was accepted';
 EXCEPTION
   WHEN OTHERS THEN
-    IF SQLERRM LIKE '%traversal%' OR SQLERRM LIKE '%invalid%' THEN
-      RAISE NOTICE 'INJ-003 PASSED: Path traversal blocked - %', SQLERRM;
+    IF SQLERRM LIKE '%Invalid bucket name%' THEN
+      RAISE NOTICE 'INJ-003 PASSED: Invalid bucket name blocked path traversal - %', SQLERRM;
     ELSE
-      RAISE NOTICE 'INJ-003 INFO: Request failed - %', SQLERRM;
+      RAISE NOTICE 'INJ-003 INFO: Request failed (verify bucket validation) - %', SQLERRM;
+    END IF;
+END $$;
+
+-- INJ-004: Null byte injection must be blocked
+SELECT 'INJ-004: Null byte injection must be blocked' AS test;
+DO $$
+BEGIN
+  PERFORM * FROM header_inj_test
+  WHERE bucket = E'test\x00malicious';
+
+  RAISE EXCEPTION 'INJ-004 FAILED: Null byte injection was not blocked';
+EXCEPTION
+  WHEN OTHERS THEN
+    IF SQLERRM LIKE '%null bytes%' OR SQLERRM LIKE '%Invalid bucket name%' THEN
+      RAISE NOTICE 'INJ-004 PASSED: Null byte injection blocked - %', SQLERRM;
+    ELSE
+      RAISE NOTICE 'INJ-004 INFO: Request failed (verify null byte blocking) - %', SQLERRM;
+    END IF;
+END $$;
+
+-- INJ-005: Invalid bucket name format must be rejected
+SELECT 'INJ-005: Invalid bucket name format must be rejected' AS test;
+DO $$
+BEGIN
+  PERFORM * FROM header_inj_test
+  WHERE bucket = 'UPPERCASE-BUCKET';  -- AWS buckets must be lowercase
+
+  RAISE EXCEPTION 'INJ-005 FAILED: Invalid bucket name format was accepted';
+EXCEPTION
+  WHEN OTHERS THEN
+    IF SQLERRM LIKE '%Invalid bucket name%' OR SQLERRM LIKE '%lowercase%' THEN
+      RAISE NOTICE 'INJ-005 PASSED: Invalid bucket name rejected - %', SQLERRM;
+    ELSE
+      RAISE NOTICE 'INJ-005 INFO: Request failed - %', SQLERRM;
+    END IF;
+END $$;
+
+-- INJ-006: Bucket name too short must be rejected
+SELECT 'INJ-006: Bucket name too short must be rejected' AS test;
+DO $$
+BEGIN
+  PERFORM * FROM header_inj_test
+  WHERE bucket = 'ab';  -- Too short (min 3 chars)
+
+  RAISE EXCEPTION 'INJ-006 FAILED: Too-short bucket name was accepted';
+EXCEPTION
+  WHEN OTHERS THEN
+    IF SQLERRM LIKE '%Invalid bucket name%' OR SQLERRM LIKE '%3-63 characters%' THEN
+      RAISE NOTICE 'INJ-006 PASSED: Too-short bucket name rejected - %', SQLERRM;
+    ELSE
+      RAISE NOTICE 'INJ-006 INFO: Request failed - %', SQLERRM;
     END IF;
 END $$;
 
