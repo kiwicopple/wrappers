@@ -334,8 +334,8 @@ fn find_json_array_end(json: &str) -> Option<usize> {
 // Security Constants
 // ============================================================================
 
-/// Maximum response size in bytes (10 MB) to prevent DoS via large responses
-const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
+/// Default maximum response size in bytes (10 MB) to prevent DoS via large responses
+const DEFAULT_MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
 
 // ============================================================================
 // Input Validation - Security validation for user inputs
@@ -781,6 +781,9 @@ struct AwsFdw {
     region: String,
     endpoint_url: Option<String>,
 
+    // Security settings
+    max_response_size: usize,
+
     // Current service and object type
     service: Option<AwsService>,
     object_type: Option<ObjectType>,
@@ -877,11 +880,11 @@ impl AwsFdw {
         http::error_for_status(&resp)?;
 
         // Security: Check response size to prevent DoS
-        if resp.body.len() > MAX_RESPONSE_SIZE {
+        if resp.body.len() > self.max_response_size {
             return Err(format!(
                 "Response too large ({} bytes). Maximum allowed: {} bytes",
                 resp.body.len(),
-                MAX_RESPONSE_SIZE
+                self.max_response_size
             ));
         }
 
@@ -1021,11 +1024,11 @@ impl AwsFdw {
         http::error_for_status(&resp)?;
 
         // Security: Check response size to prevent DoS
-        if resp.body.len() > MAX_RESPONSE_SIZE {
+        if resp.body.len() > self.max_response_size {
             return Err(format!(
                 "Response too large ({} bytes). Maximum allowed: {} bytes",
                 resp.body.len(),
-                MAX_RESPONSE_SIZE
+                self.max_response_size
             ));
         }
 
@@ -1178,11 +1181,11 @@ impl AwsFdw {
         http::error_for_status(&resp)?;
 
         // Security: Check response size to prevent DoS
-        if resp.body.len() > MAX_RESPONSE_SIZE {
+        if resp.body.len() > self.max_response_size {
             return Err(format!(
                 "Response too large ({} bytes). Maximum allowed: {} bytes",
                 resp.body.len(),
-                MAX_RESPONSE_SIZE
+                self.max_response_size
             ));
         }
 
@@ -1314,11 +1317,11 @@ impl AwsFdw {
         http::error_for_status(&resp)?;
 
         // Security: Check response size to prevent DoS
-        if resp.body.len() > MAX_RESPONSE_SIZE {
+        if resp.body.len() > self.max_response_size {
             return Err(format!(
                 "Response too large ({} bytes). Maximum allowed: {} bytes",
                 resp.body.len(),
-                MAX_RESPONSE_SIZE
+                self.max_response_size
             ));
         }
 
@@ -1600,6 +1603,14 @@ impl Guest for AwsFdw {
                 Some(url)
             }
             None => None,
+        };
+
+        // SECURITY: Configure max response size (default 10 MB)
+        this.max_response_size = match opts.get("max_response_size") {
+            Some(size_str) => size_str
+                .parse::<usize>()
+                .map_err(|_| format!("Invalid max_response_size: {}. Must be a positive integer.", size_str))?,
+            None => DEFAULT_MAX_RESPONSE_SIZE,
         };
 
         stats::inc_stats(FDW_NAME, stats::Metric::CreateTimes, 1);
