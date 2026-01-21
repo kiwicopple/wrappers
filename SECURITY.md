@@ -1,5 +1,7 @@
 # Wrappers Platform Security
 
+> **Security Disclosure**: If you discover a security vulnerability, please report it via https://supabase.com/.well-known/security.txt
+
 This document covers security measures implemented across the entire Wrappers platform. For FDW-specific security concerns, see the individual FDW documentation.
 
 ---

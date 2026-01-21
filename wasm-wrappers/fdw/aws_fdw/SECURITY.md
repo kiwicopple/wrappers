@@ -1,5 +1,7 @@
 # AWS FDW Security Analysis
 
+> **Security Disclosure**: If you discover a security vulnerability, please report it via https://supabase.com/.well-known/security.txt
+
 This document covers security considerations **specific to the AWS WASM FDW**.
 
 For platform-wide security (credential masking, WASM checksum verification), see [/SECURITY.md](/SECURITY.md).
