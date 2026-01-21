@@ -9,11 +9,11 @@
 -- Clean up any existing test objects
 DROP FOREIGN TABLE IF EXISTS s3_buckets CASCADE;
 DROP FOREIGN TABLE IF EXISTS s3_objects CASCADE;
-DROP FOREIGN TABLE IF EXISTS s3_test_bucket_objects CASCADE;
-DROP FOREIGN TABLE IF EXISTS s3_large_bucket_objects CASCADE;
 DROP SERVER IF EXISTS aws_test_server CASCADE;
 DROP FOREIGN DATA WRAPPER IF EXISTS aws_wrapper CASCADE;
 DROP SCHEMA IF EXISTS aws_test CASCADE;
+DROP SCHEMA IF EXISTS aws_limited CASCADE;
+DROP SCHEMA IF EXISTS aws_except CASCADE;
 
 -- Create the FDW (assumes wasm_fdw extension is installed)
 CREATE EXTENSION IF NOT EXISTS wrappers;
@@ -59,10 +59,12 @@ SELECT count(*) AS bucket_count FROM s3_buckets;
 -- Expected: 3
 
 -- ============================================================================
--- Test 2: List Objects in a Bucket
+-- Test 2: List Objects in a Bucket (using WHERE clause)
 -- ============================================================================
 
-CREATE FOREIGN TABLE s3_test_bucket_objects (
+-- Note: bucket column is required in WHERE clause
+CREATE FOREIGN TABLE s3_objects (
+  bucket text,
   key text,
   size bigint,
   last_modified timestamp,
@@ -72,79 +74,44 @@ CREATE FOREIGN TABLE s3_test_bucket_objects (
 SERVER aws_test_server
 OPTIONS (
   service 's3',
-  object 'objects',
-  bucket 'test-bucket'
+  object 'objects'
 );
 
 SELECT 'Test 2.1: List objects in test-bucket' AS test;
-SELECT key, size FROM s3_test_bucket_objects ORDER BY key;
+SELECT bucket, key, size FROM s3_objects WHERE bucket = 'test-bucket' ORDER BY key;
 
 SELECT 'Test 2.2: Count objects in test-bucket' AS test;
-SELECT count(*) AS object_count FROM s3_test_bucket_objects;
+SELECT count(*) AS object_count FROM s3_objects WHERE bucket = 'test-bucket';
 -- Expected: 4
 
 -- ============================================================================
 -- Test 3: List Objects with Prefix Filter
 -- ============================================================================
 
-CREATE FOREIGN TABLE s3_data_objects (
-  key text,
-  size bigint,
-  last_modified timestamp,
-  etag text,
-  storage_class text
-)
-SERVER aws_test_server
-OPTIONS (
-  service 's3',
-  object 'objects',
-  bucket 'test-bucket',
-  prefix 'data/'
-);
-
 SELECT 'Test 3.1: List objects with prefix data/' AS test;
-SELECT key, size FROM s3_data_objects ORDER BY key;
+SELECT bucket, key, size FROM s3_objects
+WHERE bucket = 'test-bucket' AND prefix = 'data/'
+ORDER BY key;
 
 SELECT 'Test 3.2: Count objects with prefix' AS test;
-SELECT count(*) AS object_count FROM s3_data_objects;
+SELECT count(*) AS object_count FROM s3_objects
+WHERE bucket = 'test-bucket' AND prefix = 'data/';
 -- Expected: 2
 
 -- ============================================================================
 -- Test 4: Empty Bucket
 -- ============================================================================
 
-CREATE FOREIGN TABLE s3_empty_bucket_objects (
-  key text,
-  size bigint
-)
-SERVER aws_test_server
-OPTIONS (
-  service 's3',
-  object 'objects',
-  bucket 'empty-bucket'
-);
-
 SELECT 'Test 4.1: List objects in empty bucket' AS test;
-SELECT * FROM s3_empty_bucket_objects;
+SELECT * FROM s3_objects WHERE bucket = 'empty-bucket';
 -- Expected: 0 rows
 
 -- ============================================================================
 -- Test 5: Large Bucket (Pagination)
 -- ============================================================================
 
-CREATE FOREIGN TABLE s3_large_bucket_objects (
-  key text,
-  size bigint
-)
-SERVER aws_test_server
-OPTIONS (
-  service 's3',
-  object 'objects',
-  bucket 'large-bucket'
-);
-
 SELECT 'Test 5.1: Count objects in large bucket' AS test;
-SELECT count(*) AS object_count FROM s3_large_bucket_objects;
+SELECT count(*) AS object_count FROM s3_objects WHERE bucket = 'large-bucket';
 -- Expected: 100
 
 -- ============================================================================
@@ -167,11 +134,14 @@ SELECT 'Test 6.3: Query imported buckets table' AS test;
 SELECT count(*) AS bucket_count FROM aws_test.s3_buckets;
 -- Expected: 3
 
+SELECT 'Test 6.4: Query imported objects table with WHERE bucket' AS test;
+SELECT count(*) AS object_count FROM aws_test.s3_objects WHERE bucket = 'test-bucket';
+-- Expected: 4
+
 -- ============================================================================
 -- Test 7: Import with LIMIT TO
 -- ============================================================================
 
-DROP SCHEMA IF EXISTS aws_limited CASCADE;
 CREATE SCHEMA aws_limited;
 
 SELECT 'Test 7.1: Import S3 schema with LIMIT TO' AS test;
@@ -188,7 +158,6 @@ ORDER BY table_name;
 -- Test 8: Import with EXCEPT
 -- ============================================================================
 
-DROP SCHEMA IF EXISTS aws_except CASCADE;
 CREATE SCHEMA aws_except;
 
 SELECT 'Test 8.1: Import S3 schema with EXCEPT' AS test;
@@ -205,16 +174,12 @@ ORDER BY table_name;
 -- Test 9: Error Cases
 -- ============================================================================
 
--- Test 9.1: Missing bucket option for objects
-SELECT 'Test 9.1: Missing bucket option (should fail)' AS test;
+-- Test 9.1: Missing bucket in WHERE clause for objects
+SELECT 'Test 9.1: Missing bucket WHERE clause (should fail)' AS test;
 DO $$
 BEGIN
-  CREATE FOREIGN TABLE s3_no_bucket (key text)
-  SERVER aws_test_server
-  OPTIONS (service 's3', object 'objects');
-
-  PERFORM * FROM s3_no_bucket;
-  RAISE EXCEPTION 'Should have failed';
+  PERFORM * FROM s3_objects LIMIT 1;
+  RAISE EXCEPTION 'Should have failed - bucket is required';
 EXCEPTION
   WHEN OTHERS THEN
     RAISE NOTICE 'Expected error: %', SQLERRM;
@@ -236,6 +201,18 @@ EXCEPTION
 END $$;
 
 -- ============================================================================
+-- Test 10: Query Multiple Buckets
+-- ============================================================================
+
+SELECT 'Test 10.1: Query different buckets in sequence' AS test;
+SELECT 'test-bucket' AS source, count(*) AS count FROM s3_objects WHERE bucket = 'test-bucket'
+UNION ALL
+SELECT 'empty-bucket', count(*) FROM s3_objects WHERE bucket = 'empty-bucket'
+UNION ALL
+SELECT 'large-bucket', count(*) FROM s3_objects WHERE bucket = 'large-bucket';
+-- Expected: test-bucket: 4, empty-bucket: 0, large-bucket: 100
+
+-- ============================================================================
 -- Cleanup
 -- ============================================================================
 
@@ -246,9 +223,6 @@ SELECT 'All tests completed!' AS status;
 -- DROP SCHEMA aws_limited CASCADE;
 -- DROP SCHEMA aws_except CASCADE;
 -- DROP FOREIGN TABLE s3_buckets CASCADE;
--- DROP FOREIGN TABLE s3_test_bucket_objects CASCADE;
--- DROP FOREIGN TABLE s3_data_objects CASCADE;
--- DROP FOREIGN TABLE s3_empty_bucket_objects CASCADE;
--- DROP FOREIGN TABLE s3_large_bucket_objects CASCADE;
+-- DROP FOREIGN TABLE s3_objects CASCADE;
 -- DROP SERVER aws_test_server CASCADE;
 -- DROP FOREIGN DATA WRAPPER aws_wrapper CASCADE;

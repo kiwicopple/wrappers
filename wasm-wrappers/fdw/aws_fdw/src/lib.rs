@@ -7,7 +7,7 @@ use bindings::{
         http, stats, time,
         types::{
             Cell, Context, FdwError, FdwResult, ImportForeignSchemaStmt,
-            ImportSchemaType, OptionsType, Row,
+            ImportSchemaType, OptionsType, Row, Value,
         },
         utils,
     },
@@ -252,6 +252,7 @@ struct S3Bucket {
 
 #[derive(Debug, Clone)]
 struct S3Object {
+    bucket: String,
     key: String,
     size: i64,
     last_modified: String,
@@ -367,7 +368,9 @@ impl AwsFdw {
     }
 
     fn list_objects(&mut self) -> Result<(), FdwError> {
-        let bucket = self.bucket.as_ref().ok_or("bucket option is required for listing objects")?;
+        let bucket = self.bucket.as_ref().ok_or(
+            "Bucket is required. Use WHERE bucket = 'bucket-name' to query objects."
+        )?;
 
         let path = format!("/{}", bucket);
         let mut query_parts = vec!["list-type=2".to_string()];
@@ -392,6 +395,7 @@ impl AwsFdw {
         self.continuation_token = extract_xml_value(&body, "NextContinuationToken");
 
         // Parse objects
+        let bucket_name = bucket.clone();
         for content_xml in extract_xml_elements(&body, "Contents") {
             let key = extract_xml_value(&content_xml, "Key").unwrap_or_default();
             let size = extract_xml_value(&content_xml, "Size")
@@ -405,6 +409,7 @@ impl AwsFdw {
                 .unwrap_or_else(|| "STANDARD".to_string());
 
             self.objects.push(S3Object {
+                bucket: bucket_name.clone(),
                 key,
                 size,
                 last_modified,
@@ -528,8 +533,29 @@ impl Guest for AwsFdw {
             _ => return Err(format!("Unknown object type: {}. Use 'buckets' or 'objects'.", object)),
         });
 
-        this.bucket = opts.get("bucket");
-        this.prefix = opts.get("prefix");
+        // Reset filters - these will be set from WHERE clause
+        this.bucket = None;
+        this.prefix = None;
+
+        // Extract bucket and prefix from WHERE clause quals
+        // This allows queries like: SELECT * FROM s3_objects WHERE bucket = 'my-bucket'
+        for qual in ctx.get_quals() {
+            let field = qual.field().to_lowercase();
+            let value = match qual.value() {
+                Value::Cell(Cell::String(s)) => s,
+                _ => continue,
+            };
+
+            match field.as_str() {
+                "bucket" => {
+                    this.bucket = Some(value);
+                }
+                "prefix" => {
+                    this.prefix = Some(value);
+                }
+                _ => {}
+            }
+        }
 
         // Reset scan state
         this.buckets.clear();
@@ -593,6 +619,7 @@ impl Guest for AwsFdw {
 
                 for col in ctx.get_columns() {
                     let cell = match col.name().as_str() {
+                        "bucket" => Some(Cell::String(object.bucket.clone())),
                         "key" => Some(Cell::String(object.key.clone())),
                         "size" => Some(Cell::I64(object.size)),
                         "last_modified" => {
@@ -677,6 +704,7 @@ server {} options (
     object 'buckets'
 )"#),
             ("objects", r#"create foreign table if not exists s3_objects (
+    bucket text,
     key text,
     size bigint,
     last_modified timestamp,
