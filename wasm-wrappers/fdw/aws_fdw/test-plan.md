@@ -19,7 +19,7 @@ services:
     ports:
       - "4566:4566"
     environment:
-      - SERVICES=s3,lambda,cloudwatch
+      - SERVICES=s3,ec2,lambda,route53
       - DEBUG=1
       - AWS_DEFAULT_REGION=us-east-1
     volumes:

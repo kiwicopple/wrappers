@@ -41,6 +41,9 @@ psql -f test_lambda.sql
 
 # Run Route53 tests
 psql -f test_route53.sql
+
+# Run Security tests
+psql -f test_security.sql
 ```
 
 Or run the test files manually in your PostgreSQL client.
@@ -96,6 +99,19 @@ Or run the test files manually in your PostgreSQL client.
 | Test 4 | Query DNS records by type |
 | Test 5 | Import foreign schema for Route53 |
 | Test 6 | Error cases |
+
+### Security Tests
+
+| Test | Severity | Description |
+|------|----------|-------------|
+| SEC-030 | HIGH | INSERT operations rejected |
+| SEC-031 | HIGH | UPDATE operations rejected |
+| SEC-032 | HIGH | DELETE operations rejected |
+| SEC-008 | MEDIUM | Invalid service option rejected |
+| SEC-009 | MEDIUM | Invalid object type rejected |
+| SEC-S3-001 | MEDIUM | S3 objects requires bucket filter |
+| SEC-R53-001 | MEDIUM | Route53 records requires zone_id filter |
+| SEC-IFS-001 | LOW | Invalid schema import rejected |
 
 ## Test Data
 
