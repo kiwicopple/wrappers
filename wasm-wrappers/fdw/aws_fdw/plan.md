@@ -16,17 +16,17 @@ This document outlines the plan for creating a WebAssembly (WASM) Foreign Data W
 
 ### Phase 1: Initial Release (Read-Only)
 
-| Service | Description | Operations |
-|---------|-------------|------------|
-| **S3** | Object storage listing | List buckets, list objects, get object metadata |
-| **Lambda** | Serverless functions | List functions, get function details |
-| **CloudWatch** | Metrics and logs | List metrics, get metric data |
+| Service | Description | Operations | Status |
+|---------|-------------|------------|--------|
+| **S3** | Object storage listing | List buckets, list objects, get object metadata | ✅ Implemented |
+| **EC2** | Instance listing and details | Describe instances with tags | ✅ Implemented |
+| **Lambda** | Serverless functions | List functions, get function details | Planned |
+| **CloudWatch** | Metrics and logs | List metrics, get metric data | Planned |
 
 ### Future Phases
 
 | Service | Description |
 |---------|-------------|
-| EC2 | Instance listing and details |
 | RDS | Database instance listing |
 | SQS | Queue listing and message counts |
 | SNS | Topic listing |
@@ -79,10 +79,10 @@ wasm-wrappers/fdw/aws_fdw/
 │                         │                                    │
 │  ┌──────────────────────┴──────────────────────────────┐    │
 │  │                   Services Layer                     │    │
-│  │  ┌─────────┐ ┌────────┐ ┌───────────┐              │    │
-│  │  │   S3    │ │ Lambda │ │CloudWatch │              │    │
-│  │  └────┬────┘ └───┬────┘ └─────┬─────┘              │    │
-│  └───────┼──────────┼────────────┼─────────────────────┘    │
+│  │  ┌─────────┐ ┌─────────┐ ┌────────┐ ┌───────────┐  │    │
+│  │  │   S3    │ │   EC2   │ │ Lambda │ │CloudWatch │  │    │
+│  │  └────┬────┘ └────┬────┘ └───┬────┘ └─────┬─────┘  │    │
+│  └───────┼───────────┼──────────┼────────────┼────────┘    │
 │          │          │            │                          │
 │  ┌───────┴──────────┴────────────┴───────────────────┐     │
 │  │              AWS Client (auth.rs)                   │     │
@@ -205,8 +205,14 @@ enum AwsService {
 | Operation | API Endpoint | Foreign Table Columns |
 |-----------|--------------|----------------------|
 | ListBuckets | GET / | name, creation_date |
-| ListObjectsV2 | GET /{bucket}?list-type=2 | key, size, last_modified, etag, storage_class |
+| ListObjectsV2 | GET /{bucket}?list-type=2 | bucket, key, size, last_modified, etag, storage_class |
 | HeadObject | HEAD /{bucket}/{key} | content_type, content_length, metadata |
+
+#### EC2 Service
+
+| Operation | API Action | Foreign Table Columns |
+|-----------|------------|----------------------|
+| DescribeInstances | DescribeInstances | instance_id, instance_type, state, public_ip, private_ip, vpc_id, subnet_id, launch_time, tags |
 
 #### Lambda Service (services/lambda.rs)
 
@@ -310,6 +316,40 @@ options (
 select * from aws_s3_objects where key like '%.json';
 ```
 
+### EC2 Examples
+
+```sql
+-- List all EC2 instances
+create foreign table ec2_instances (
+  instance_id text,
+  instance_type text,
+  state text,
+  public_ip text,
+  private_ip text,
+  vpc_id text,
+  subnet_id text,
+  launch_time timestamp,
+  tags jsonb
+)
+server aws_server
+options (
+  service 'ec2',
+  object 'instances'
+);
+
+-- Query all instances
+select instance_id, instance_type, state, tags->>'Name' as name
+from ec2_instances;
+
+-- Filter by instance type
+select * from ec2_instances where instance_type = 't2.micro';
+
+-- Query by tag value (client-side filtering)
+select instance_id, tags->>'Name' as name
+from ec2_instances
+where tags->>'Environment' = 'production';
+```
+
 ### Lambda Examples
 
 ```sql
@@ -401,9 +441,10 @@ The `remote_schema` parameter maps to AWS services:
 
 | Remote Schema | Tables Created |
 |---------------|----------------|
-| `s3` | `buckets`, `objects` |
-| `lambda` | `functions` |
-| `cloudwatch` | `metrics`, `metric_data` |
+| `s3` | `s3_buckets`, `s3_objects` |
+| `ec2` | `ec2_instances` |
+| `lambda` | `lambda_functions` |
+| `cloudwatch` | `cloudwatch_metrics`, `cloudwatch_metric_data` |
 | `all` | All tables from all services |
 
 ### Table Definitions
@@ -418,8 +459,9 @@ create foreign table if not exists s3_buckets (
 )
 server {server_name} options (service 's3', object 'buckets');
 
--- s3_objects (requires bucket option at query time via WHERE or separate table)
+-- s3_objects (requires WHERE bucket = 'bucket-name' clause)
 create foreign table if not exists s3_objects (
+    bucket text,
     key text,
     size bigint,
     last_modified timestamp,
@@ -427,6 +469,24 @@ create foreign table if not exists s3_objects (
     storage_class text
 )
 server {server_name} options (service 's3', object 'objects');
+```
+
+#### EC2 Tables
+
+```sql
+-- ec2_instances
+create foreign table if not exists ec2_instances (
+    instance_id text,
+    instance_type text,
+    state text,
+    public_ip text,
+    private_ip text,
+    vpc_id text,
+    subnet_id text,
+    launch_time timestamp,
+    tags jsonb
+)
+server {server_name} options (service 'ec2', object 'instances');
 ```
 
 #### Lambda Tables
@@ -473,6 +533,9 @@ server {server_name} options (service 'cloudwatch', object 'metric_data');
 ```sql
 -- Import all S3 tables
 import foreign schema s3 from server aws_server into aws;
+
+-- Import all EC2 tables
+import foreign schema ec2 from server aws_server into aws;
 
 -- Import all Lambda tables
 import foreign schema lambda from server aws_server into aws;
@@ -529,17 +592,22 @@ fn import_foreign_schema(
 ### Phase 1: Complete Implementation
 
 #### Foundation
-- [ ] Set up project structure (Cargo.toml, wit/world.wit)
-- [ ] Implement AWS Signature V4 authentication
-- [ ] Create base AWS HTTP client using WIT http interface
-- [ ] Implement FDW lifecycle methods (init, begin_scan, iter_scan, end_scan)
-- [ ] Add error handling and reporting via WIT utils
+- [x] Set up project structure (Cargo.toml, wit/world.wit)
+- [x] Implement AWS Signature V4 authentication
+- [x] Create base AWS HTTP client using WIT http interface
+- [x] Implement FDW lifecycle methods (init, begin_scan, iter_scan, end_scan)
+- [x] Add error handling and reporting via WIT utils
 
 #### S3 Service
-- [ ] Implement ListBuckets
-- [ ] Implement ListObjectsV2 with prefix filtering
+- [x] Implement ListBuckets
+- [x] Implement ListObjectsV2 with prefix filtering
 - [ ] Implement HeadObject for metadata
-- [ ] Add pagination support for large result sets
+- [x] Add pagination support for large result sets
+
+#### EC2 Service
+- [x] Implement DescribeInstances
+- [x] Parse instance tags to JSONB
+- [x] Support network details (VPC, subnet, IPs)
 
 #### Lambda Service
 - [ ] Implement ListFunctions
@@ -553,18 +621,19 @@ fn import_foreign_schema(
 - [ ] Support metric statistics (Average, Sum, etc.)
 
 #### Import Foreign Schema
-- [ ] Implement `import_foreign_schema` function
-- [ ] Define table schemas for S3 (buckets, objects)
+- [x] Implement `import_foreign_schema` function
+- [x] Define table schemas for S3 (buckets, objects)
+- [x] Define table schemas for EC2 (instances)
 - [ ] Define table schemas for Lambda (functions)
 - [ ] Define table schemas for CloudWatch (metrics, metric_data)
-- [ ] Support `all` schema to import all services
-- [ ] Handle LIMIT TO filtering
-- [ ] Handle EXCEPT filtering
+- [x] Support `all` schema to import all services
+- [x] Handle LIMIT TO filtering
+- [x] Handle EXCEPT filtering
 
 #### Testing & Documentation
-- [ ] Integration tests with LocalStack
-- [ ] Documentation for each service
-- [ ] Example SQL scripts
+- [x] Integration tests with LocalStack (S3, EC2)
+- [x] Documentation for each service
+- [x] Example SQL scripts
 - [ ] Performance benchmarking
 
 #### Release

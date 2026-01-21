@@ -207,7 +207,7 @@ fn days_to_ymd(days: i64) -> (i64, u32, u32) {
 }
 
 // ============================================================================
-// S3 XML Parsing
+// XML Parsing Helpers
 // ============================================================================
 
 fn extract_xml_value(xml: &str, tag: &str) -> Option<String> {
@@ -261,13 +261,39 @@ struct S3Object {
 }
 
 // ============================================================================
+// EC2 Data Structures
+// ============================================================================
+
+#[derive(Debug, Clone)]
+struct Ec2Instance {
+    instance_id: String,
+    instance_type: String,
+    state: String,
+    public_ip: Option<String>,
+    private_ip: Option<String>,
+    vpc_id: Option<String>,
+    subnet_id: Option<String>,
+    launch_time: String,
+    tags: String, // JSON string
+}
+
+// ============================================================================
 // AWS FDW Implementation
 // ============================================================================
 
 #[derive(Debug, Clone, PartialEq)]
-enum S3ObjectType {
-    Buckets,
-    Objects,
+enum AwsService {
+    S3,
+    Ec2,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ObjectType {
+    // S3
+    S3Buckets,
+    S3Objects,
+    // EC2
+    Ec2Instances,
 }
 
 #[derive(Debug, Default)]
@@ -278,18 +304,29 @@ struct AwsFdw {
     region: String,
     endpoint_url: Option<String>,
 
+    // Current service and object type
+    service: Option<AwsService>,
+    object_type: Option<ObjectType>,
+
     // S3 specific options
-    object_type: Option<S3ObjectType>,
     bucket: Option<String>,
     prefix: Option<String>,
 
-    // Scan state
+    // EC2 specific options
+    instance_id: Option<String>,
+
+    // Scan state - S3
     buckets: Vec<S3Bucket>,
     objects: Vec<S3Object>,
+
+    // Scan state - EC2
+    instances: Vec<Ec2Instance>,
+
+    // Common scan state
     row_idx: usize,
 
     // Pagination
-    continuation_token: Option<String>,
+    next_token: Option<String>,
     is_truncated: bool,
 }
 
@@ -307,6 +344,10 @@ impl AwsFdw {
     fn this_mut() -> &'static mut Self {
         unsafe { &mut (*INSTANCE) }
     }
+
+    // ========================================================================
+    // S3 Methods
+    // ========================================================================
 
     fn get_s3_endpoint(&self) -> String {
         if let Some(ref endpoint) = self.endpoint_url {
@@ -379,7 +420,7 @@ impl AwsFdw {
             query_parts.push(format!("prefix={}", url_encode(prefix, true)));
         }
 
-        if let Some(ref token) = self.continuation_token {
+        if let Some(ref token) = self.next_token {
             query_parts.push(format!("continuation-token={}", url_encode(token, true)));
         }
 
@@ -392,7 +433,7 @@ impl AwsFdw {
             .unwrap_or(false);
 
         // Parse continuation token
-        self.continuation_token = extract_xml_value(&body, "NextContinuationToken");
+        self.next_token = extract_xml_value(&body, "NextContinuationToken");
 
         // Parse objects
         let bucket_name = bucket.clone();
@@ -422,6 +463,174 @@ impl AwsFdw {
 
         Ok(())
     }
+
+    // ========================================================================
+    // EC2 Methods
+    // ========================================================================
+
+    fn get_ec2_endpoint(&self) -> String {
+        if let Some(ref endpoint) = self.endpoint_url {
+            endpoint.clone()
+        } else {
+            format!("https://ec2.{}.amazonaws.com", self.region)
+        }
+    }
+
+    fn make_ec2_request(&self, action: &str, extra_params: &[(&str, &str)]) -> Result<String, FdwError> {
+        let endpoint = self.get_ec2_endpoint();
+
+        // Build query string
+        let mut params: Vec<(String, String)> = vec![
+            ("Action".to_string(), action.to_string()),
+            ("Version".to_string(), "2016-11-15".to_string()),
+        ];
+
+        for (k, v) in extra_params {
+            params.push((k.to_string(), v.to_string()));
+        }
+
+        // Sort params for signing
+        params.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let query = params
+            .iter()
+            .map(|(k, v)| format!("{}={}", url_encode(k, true), url_encode(v, true)))
+            .collect::<Vec<_>>()
+            .join("&");
+
+        let url = format!("{}/?{}", endpoint, query);
+
+        let signed = sign_request(
+            "GET",
+            &url,
+            &[],
+            &[],
+            &self.access_key,
+            &self.secret_key,
+            &self.region,
+            "ec2",
+        );
+
+        let req = http::Request {
+            method: http::Method::Get,
+            url: url.clone(),
+            headers: signed.headers,
+            body: String::new(),
+        };
+
+        let resp = http::get(&req)?;
+        http::error_for_status(&resp)?;
+
+        stats::inc_stats(FDW_NAME, stats::Metric::BytesIn, resp.body.len() as i64);
+
+        Ok(resp.body)
+    }
+
+    fn describe_instances(&mut self) -> Result<(), FdwError> {
+        let mut extra_params: Vec<(&str, &str)> = Vec::new();
+
+        // Filter by instance ID if provided
+        if let Some(ref instance_id) = self.instance_id {
+            extra_params.push(("InstanceId.1", instance_id.as_str()));
+        }
+
+        // Add next token for pagination
+        let next_token_string;
+        if let Some(ref token) = self.next_token {
+            next_token_string = token.clone();
+            extra_params.push(("NextToken", &next_token_string));
+        }
+
+        let body = self.make_ec2_request("DescribeInstances", &extra_params)?;
+
+        // Parse next token
+        self.next_token = extract_xml_value(&body, "nextToken");
+        self.is_truncated = self.next_token.is_some();
+
+        // Parse instances from reservationSet/item/instancesSet/item
+        for reservation_xml in extract_xml_elements(&body, "item") {
+            // Check if this is a reservation (has instancesSet)
+            if !reservation_xml.contains("<instancesSet>") {
+                continue;
+            }
+
+            for instance_xml in extract_xml_elements(&reservation_xml, "item") {
+                // Skip if this doesn't look like an instance (must have instanceId)
+                let instance_id = match extract_xml_value(&instance_xml, "instanceId") {
+                    Some(id) => id,
+                    None => continue,
+                };
+
+                let instance_type = extract_xml_value(&instance_xml, "instanceType")
+                    .unwrap_or_default();
+
+                // Parse instance state
+                let state = extract_xml_value(&instance_xml, "instanceState")
+                    .and_then(|state_xml| extract_xml_value(&state_xml, "name"))
+                    .unwrap_or_default();
+
+                let public_ip = extract_xml_value(&instance_xml, "ipAddress");
+                let private_ip = extract_xml_value(&instance_xml, "privateIpAddress");
+                let vpc_id = extract_xml_value(&instance_xml, "vpcId");
+                let subnet_id = extract_xml_value(&instance_xml, "subnetId");
+                let launch_time = extract_xml_value(&instance_xml, "launchTime")
+                    .unwrap_or_default();
+
+                // Parse tags into JSON
+                let tags = self.parse_ec2_tags(&instance_xml);
+
+                self.instances.push(Ec2Instance {
+                    instance_id,
+                    instance_type,
+                    state,
+                    public_ip,
+                    private_ip,
+                    vpc_id,
+                    subnet_id,
+                    launch_time,
+                    tags,
+                });
+            }
+        }
+
+        stats::inc_stats(FDW_NAME, stats::Metric::RowsIn, self.instances.len() as i64);
+
+        Ok(())
+    }
+
+    fn parse_ec2_tags(&self, instance_xml: &str) -> String {
+        let mut tags_json = String::from("{");
+        let mut first = true;
+
+        if let Some(tag_set_start) = instance_xml.find("<tagSet>") {
+            if let Some(tag_set_end) = instance_xml[tag_set_start..].find("</tagSet>") {
+                let tag_set_xml = &instance_xml[tag_set_start..tag_set_start + tag_set_end + 9];
+
+                for tag_xml in extract_xml_elements(tag_set_xml, "item") {
+                    if let (Some(key), Some(value)) = (
+                        extract_xml_value(&tag_xml, "key"),
+                        extract_xml_value(&tag_xml, "value"),
+                    ) {
+                        if !first {
+                            tags_json.push(',');
+                        }
+                        first = false;
+                        // Escape JSON string values
+                        let escaped_key = key.replace('\\', "\\\\").replace('"', "\\\"");
+                        let escaped_value = value.replace('\\', "\\\\").replace('"', "\\\"");
+                        tags_json.push_str(&format!("\"{}\":\"{}\"", escaped_key, escaped_value));
+                    }
+                }
+            }
+        }
+
+        tags_json.push('}');
+        tags_json
+    }
+
+    // ========================================================================
+    // Common Methods
+    // ========================================================================
 
     fn parse_iso8601_timestamp(ts: &str) -> Result<i64, FdwError> {
         // Parse ISO 8601 timestamp: 2024-01-15T10:30:00.000Z
@@ -466,6 +675,24 @@ impl AwsFdw {
 
         // Return microseconds
         Ok(secs * 1_000_000)
+    }
+
+    fn reset_scan_state(&mut self) {
+        self.buckets.clear();
+        self.objects.clear();
+        self.instances.clear();
+        self.row_idx = 0;
+        self.next_token = None;
+        self.is_truncated = false;
+    }
+
+    fn fetch_data(&mut self) -> Result<(), FdwError> {
+        match self.object_type {
+            Some(ObjectType::S3Buckets) => self.list_buckets(),
+            Some(ObjectType::S3Objects) => self.list_objects(),
+            Some(ObjectType::Ec2Instances) => self.describe_instances(),
+            None => Err("object type not set".to_string()),
+        }
     }
 }
 
@@ -522,23 +749,35 @@ impl Guest for AwsFdw {
         let opts = ctx.get_options(&OptionsType::Table);
 
         let service = opts.require("service")?;
-        if service != "s3" {
-            return Err(format!("Unsupported service: {}. Only 's3' is supported.", service));
-        }
 
-        let object = opts.require("object")?;
-        this.object_type = Some(match object.as_str() {
-            "buckets" => S3ObjectType::Buckets,
-            "objects" => S3ObjectType::Objects,
-            _ => return Err(format!("Unknown object type: {}. Use 'buckets' or 'objects'.", object)),
-        });
-
-        // Reset filters - these will be set from WHERE clause
+        // Reset filters
         this.bucket = None;
         this.prefix = None;
+        this.instance_id = None;
 
-        // Extract bucket and prefix from WHERE clause quals
-        // This allows queries like: SELECT * FROM s3_objects WHERE bucket = 'my-bucket'
+        // Parse service and object type
+        match service.as_str() {
+            "s3" => {
+                this.service = Some(AwsService::S3);
+                let object = opts.require("object")?;
+                this.object_type = Some(match object.as_str() {
+                    "buckets" => ObjectType::S3Buckets,
+                    "objects" => ObjectType::S3Objects,
+                    _ => return Err(format!("Unknown S3 object type: {}. Use 'buckets' or 'objects'.", object)),
+                });
+            }
+            "ec2" => {
+                this.service = Some(AwsService::Ec2);
+                let object = opts.require("object")?;
+                this.object_type = Some(match object.as_str() {
+                    "instances" => ObjectType::Ec2Instances,
+                    _ => return Err(format!("Unknown EC2 object type: {}. Use 'instances'.", object)),
+                });
+            }
+            _ => return Err(format!("Unsupported service: {}. Use 's3' or 'ec2'.", service)),
+        }
+
+        // Extract filters from WHERE clause quals
         for qual in ctx.get_quals() {
             let field = qual.field().to_lowercase();
             let value = match qual.value() {
@@ -547,29 +786,18 @@ impl Guest for AwsFdw {
             };
 
             match field.as_str() {
-                "bucket" => {
-                    this.bucket = Some(value);
-                }
-                "prefix" => {
-                    this.prefix = Some(value);
-                }
+                // S3 filters
+                "bucket" => this.bucket = Some(value),
+                "prefix" => this.prefix = Some(value),
+                // EC2 filters
+                "instance_id" => this.instance_id = Some(value),
                 _ => {}
             }
         }
 
-        // Reset scan state
-        this.buckets.clear();
-        this.objects.clear();
-        this.row_idx = 0;
-        this.continuation_token = None;
-        this.is_truncated = false;
-
-        // Fetch initial data
-        match this.object_type {
-            Some(S3ObjectType::Buckets) => this.list_buckets()?,
-            Some(S3ObjectType::Objects) => this.list_objects()?,
-            None => return Err("object type not set".to_string()),
-        }
+        // Reset scan state and fetch initial data
+        this.reset_scan_state();
+        this.fetch_data()?;
 
         Ok(())
     }
@@ -578,7 +806,7 @@ impl Guest for AwsFdw {
         let this = Self::this_mut();
 
         match this.object_type {
-            Some(S3ObjectType::Buckets) => {
+            Some(ObjectType::S3Buckets) => {
                 if this.row_idx >= this.buckets.len() {
                     return Ok(None);
                 }
@@ -600,11 +828,10 @@ impl Guest for AwsFdw {
                 this.row_idx += 1;
                 Ok(Some(0))
             }
-            Some(S3ObjectType::Objects) => {
+            Some(ObjectType::S3Objects) => {
                 // Check if we need to fetch more objects
                 if this.row_idx >= this.objects.len() {
-                    if this.is_truncated && this.continuation_token.is_some() {
-                        // Fetch next page
+                    if this.is_truncated && this.next_token.is_some() {
                         this.list_objects()?;
                     } else {
                         return Ok(None);
@@ -636,34 +863,57 @@ impl Guest for AwsFdw {
                 this.row_idx += 1;
                 Ok(Some(0))
             }
+            Some(ObjectType::Ec2Instances) => {
+                // Check if we need to fetch more instances
+                if this.row_idx >= this.instances.len() {
+                    if this.is_truncated && this.next_token.is_some() {
+                        this.describe_instances()?;
+                    } else {
+                        return Ok(None);
+                    }
+                }
+
+                if this.row_idx >= this.instances.len() {
+                    return Ok(None);
+                }
+
+                let instance = &this.instances[this.row_idx];
+
+                for col in ctx.get_columns() {
+                    let cell = match col.name().as_str() {
+                        "instance_id" => Some(Cell::String(instance.instance_id.clone())),
+                        "instance_type" => Some(Cell::String(instance.instance_type.clone())),
+                        "state" => Some(Cell::String(instance.state.clone())),
+                        "public_ip" => instance.public_ip.clone().map(Cell::String),
+                        "private_ip" => instance.private_ip.clone().map(Cell::String),
+                        "vpc_id" => instance.vpc_id.clone().map(Cell::String),
+                        "subnet_id" => instance.subnet_id.clone().map(Cell::String),
+                        "launch_time" => {
+                            let ts = Self::parse_iso8601_timestamp(&instance.launch_time)?;
+                            Some(Cell::Timestamp(ts))
+                        }
+                        "tags" => Some(Cell::Json(instance.tags.clone())),
+                        _ => None,
+                    };
+                    row.push(cell.as_ref());
+                }
+
+                this.row_idx += 1;
+                Ok(Some(0))
+            }
             None => Err("object type not set".to_string()),
         }
     }
 
     fn re_scan(_ctx: &Context) -> FdwResult {
         let this = Self::this_mut();
-
-        // Reset state and re-fetch
-        this.buckets.clear();
-        this.objects.clear();
-        this.row_idx = 0;
-        this.continuation_token = None;
-        this.is_truncated = false;
-
-        match this.object_type {
-            Some(S3ObjectType::Buckets) => this.list_buckets()?,
-            Some(S3ObjectType::Objects) => this.list_objects()?,
-            None => return Err("object type not set".to_string()),
-        }
-
-        Ok(())
+        this.reset_scan_state();
+        this.fetch_data()
     }
 
     fn end_scan(_ctx: &Context) -> FdwResult {
         let this = Self::this_mut();
-        this.buckets.clear();
-        this.objects.clear();
-        this.row_idx = 0;
+        this.reset_scan_state();
         Ok(())
     }
 
@@ -694,7 +944,7 @@ impl Guest for AwsFdw {
         let mut tables = Vec::new();
 
         // Define available tables for S3
-        let s3_tables = vec![
+        let s3_tables: Vec<(&str, &str)> = vec![
             ("buckets", r#"create foreign table if not exists s3_buckets (
     name text,
     creation_date timestamp
@@ -717,13 +967,37 @@ server {} options (
 )"#),
         ];
 
+        // Define available tables for EC2
+        let ec2_tables: Vec<(&str, &str)> = vec![
+            ("instances", r#"create foreign table if not exists ec2_instances (
+    instance_id text,
+    instance_type text,
+    state text,
+    public_ip text,
+    private_ip text,
+    vpc_id text,
+    subnet_id text,
+    launch_time timestamp,
+    tags jsonb
+)
+server {} options (
+    service 'ec2',
+    object 'instances'
+)"#),
+        ];
+
         // Determine which tables to create based on remote_schema
         let available_tables: Vec<(&str, &str)> = match stmt.remote_schema.as_str() {
             "s3" => s3_tables,
-            "all" => s3_tables,
+            "ec2" => ec2_tables,
+            "all" => {
+                let mut all = s3_tables;
+                all.extend(ec2_tables);
+                all
+            }
             _ => {
                 return Err(format!(
-                    "Unknown schema '{}'. Use: 's3' or 'all'",
+                    "Unknown schema '{}'. Use: 's3', 'ec2', or 'all'",
                     stmt.remote_schema
                 ))
             }
