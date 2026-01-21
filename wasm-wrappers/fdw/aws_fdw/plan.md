@@ -21,6 +21,7 @@ This document outlines the plan for creating a WebAssembly (WASM) Foreign Data W
 | **S3** | Object storage listing | List buckets, list objects, get object metadata | ✅ Implemented |
 | **EC2** | Instance listing and details | Describe instances with tags | ✅ Implemented |
 | **Lambda** | Serverless functions | List functions, get function details | ✅ Implemented |
+| **Route53** | DNS management | List hosted zones, list records | ✅ Implemented |
 | **CloudWatch** | Metrics and logs | List metrics, get metric data | Planned |
 
 ### Future Phases
@@ -614,6 +615,12 @@ fn import_foreign_schema(
 - [ ] Implement GetFunction for details
 - [x] Add pagination support
 
+#### Route53 Service
+- [x] Implement ListHostedZones
+- [x] Implement ListResourceRecordSets
+- [x] Add pagination support
+- [x] Parse alias targets and weighted records
+
 #### CloudWatch Service
 - [ ] Implement ListMetrics
 - [ ] Implement GetMetricData
@@ -625,13 +632,14 @@ fn import_foreign_schema(
 - [x] Define table schemas for S3 (buckets, objects)
 - [x] Define table schemas for EC2 (instances)
 - [x] Define table schemas for Lambda (functions)
+- [x] Define table schemas for Route53 (hosted_zones, records)
 - [ ] Define table schemas for CloudWatch (metrics, metric_data)
 - [x] Support `all` schema to import all services
 - [x] Handle LIMIT TO filtering
 - [x] Handle EXCEPT filtering
 
 #### Testing & Documentation
-- [x] Integration tests with LocalStack (S3, EC2, Lambda)
+- [x] Integration tests with LocalStack (S3, EC2, Lambda, Route53)
 - [x] Documentation for each service
 - [x] Example SQL scripts
 - [ ] Performance benchmarking

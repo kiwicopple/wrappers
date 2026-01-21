@@ -386,6 +386,32 @@ struct LambdaFunction {
 }
 
 // ============================================================================
+// Route53 Data Structures
+// ============================================================================
+
+#[derive(Debug, Clone)]
+struct Route53HostedZone {
+    id: String,
+    name: String,
+    caller_reference: String,
+    resource_record_set_count: i64,
+    comment: String,
+    is_private: bool,
+}
+
+#[derive(Debug, Clone)]
+struct Route53Record {
+    zone_id: String,
+    name: String,
+    record_type: String,
+    ttl: i64,
+    values: String, // JSON array of values
+    alias_target: Option<String>,
+    weight: Option<i64>,
+    set_identifier: Option<String>,
+}
+
+// ============================================================================
 // AWS FDW Implementation
 // ============================================================================
 
@@ -394,6 +420,7 @@ enum AwsService {
     S3,
     Ec2,
     Lambda,
+    Route53,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -405,6 +432,9 @@ enum ObjectType {
     Ec2Instances,
     // Lambda
     LambdaFunctions,
+    // Route53
+    Route53HostedZones,
+    Route53Records,
 }
 
 #[derive(Debug, Default)]
@@ -429,6 +459,9 @@ struct AwsFdw {
     // Lambda specific options
     function_name: Option<String>,
 
+    // Route53 specific options
+    zone_id: Option<String>,
+
     // Scan state - S3
     buckets: Vec<S3Bucket>,
     objects: Vec<S3Object>,
@@ -438,6 +471,10 @@ struct AwsFdw {
 
     // Scan state - Lambda
     functions: Vec<LambdaFunction>,
+
+    // Scan state - Route53
+    hosted_zones: Vec<Route53HostedZone>,
+    records: Vec<Route53Record>,
 
     // Common scan state
     row_idx: usize,
@@ -876,6 +913,174 @@ impl AwsFdw {
     }
 
     // ========================================================================
+    // Route53 Methods
+    // ========================================================================
+
+    fn get_route53_endpoint(&self) -> String {
+        if let Some(ref endpoint) = self.endpoint_url {
+            endpoint.clone()
+        } else {
+            // Route53 has a global endpoint
+            "https://route53.amazonaws.com".to_string()
+        }
+    }
+
+    fn make_route53_request(&self, path: &str) -> Result<String, FdwError> {
+        let endpoint = self.get_route53_endpoint();
+        let url = format!("{}{}", endpoint, path);
+
+        let signed = sign_request(
+            "GET",
+            &url,
+            &[],
+            &[],
+            &self.access_key,
+            &self.secret_key,
+            &self.region,
+            "route53",
+        );
+
+        let req = http::Request {
+            method: http::Method::Get,
+            url: url.clone(),
+            headers: signed.headers,
+            body: String::new(),
+        };
+
+        let resp = http::get(&req)?;
+        http::error_for_status(&resp)?;
+
+        stats::inc_stats(FDW_NAME, stats::Metric::BytesIn, resp.body.len() as i64);
+
+        Ok(resp.body)
+    }
+
+    fn list_hosted_zones(&mut self) -> Result<(), FdwError> {
+        let mut path = "/2013-04-01/hostedzone".to_string();
+
+        if let Some(ref token) = self.next_token {
+            path = format!("{}?marker={}", path, url_encode(token, true));
+        }
+
+        let body = self.make_route53_request(&path)?;
+
+        // Parse pagination
+        self.is_truncated = extract_xml_value(&body, "IsTruncated")
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        self.next_token = extract_xml_value(&body, "NextMarker");
+
+        // Parse hosted zones
+        for zone_xml in extract_xml_elements(&body, "HostedZone") {
+            let id = extract_xml_value(&zone_xml, "Id")
+                .unwrap_or_default()
+                .replace("/hostedzone/", "");
+            let name = extract_xml_value(&zone_xml, "Name").unwrap_or_default();
+            let caller_reference = extract_xml_value(&zone_xml, "CallerReference").unwrap_or_default();
+            let resource_record_set_count = extract_xml_value(&zone_xml, "ResourceRecordSetCount")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+
+            // Parse Config for comment and private zone
+            let comment = extract_xml_value(&zone_xml, "Comment").unwrap_or_default();
+            let is_private = extract_xml_value(&zone_xml, "PrivateZone")
+                .map(|v| v == "true")
+                .unwrap_or(false);
+
+            self.hosted_zones.push(Route53HostedZone {
+                id,
+                name,
+                caller_reference,
+                resource_record_set_count,
+                comment,
+                is_private,
+            });
+        }
+
+        stats::inc_stats(FDW_NAME, stats::Metric::RowsIn, self.hosted_zones.len() as i64);
+
+        Ok(())
+    }
+
+    fn list_resource_record_sets(&mut self) -> Result<(), FdwError> {
+        let zone_id = self.zone_id.as_ref().ok_or(
+            "Zone ID is required. Use WHERE zone_id = 'ZONE_ID' to query records."
+        )?;
+
+        let mut path = format!("/2013-04-01/hostedzone/{}/rrset", zone_id);
+
+        if let Some(ref token) = self.next_token {
+            path = format!("{}?startrecordname={}", path, url_encode(token, true));
+        }
+
+        let body = self.make_route53_request(&path)?;
+
+        // Parse pagination
+        self.is_truncated = extract_xml_value(&body, "IsTruncated")
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        self.next_token = extract_xml_value(&body, "NextRecordName");
+
+        // Parse resource record sets
+        let zone_id_clone = zone_id.clone();
+        for rrset_xml in extract_xml_elements(&body, "ResourceRecordSet") {
+            let name = extract_xml_value(&rrset_xml, "Name").unwrap_or_default();
+            let record_type = extract_xml_value(&rrset_xml, "Type").unwrap_or_default();
+            let ttl = extract_xml_value(&rrset_xml, "TTL")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+
+            // Parse resource records into JSON array
+            let values = self.parse_resource_records(&rrset_xml);
+
+            // Parse alias target if present
+            let alias_target = if rrset_xml.contains("<AliasTarget>") {
+                let dns_name = extract_xml_value(&rrset_xml, "DNSName");
+                let hosted_zone_id = extract_xml_value(&rrset_xml, "HostedZoneId");
+                match (dns_name, hosted_zone_id) {
+                    (Some(dns), Some(hz)) => Some(format!("{{\"DNSName\":\"{}\",\"HostedZoneId\":\"{}\"}}", dns, hz)),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            let weight = extract_xml_value(&rrset_xml, "Weight")
+                .and_then(|s| s.parse().ok());
+            let set_identifier = extract_xml_value(&rrset_xml, "SetIdentifier");
+
+            self.records.push(Route53Record {
+                zone_id: zone_id_clone.clone(),
+                name,
+                record_type,
+                ttl,
+                values,
+                alias_target,
+                weight,
+                set_identifier,
+            });
+        }
+
+        stats::inc_stats(FDW_NAME, stats::Metric::RowsIn, self.records.len() as i64);
+
+        Ok(())
+    }
+
+    fn parse_resource_records(&self, rrset_xml: &str) -> String {
+        let mut values = Vec::new();
+
+        for rr_xml in extract_xml_elements(rrset_xml, "ResourceRecord") {
+            if let Some(value) = extract_xml_value(&rr_xml, "Value") {
+                // Escape JSON string
+                let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+                values.push(format!("\"{}\"", escaped));
+            }
+        }
+
+        format!("[{}]", values.join(","))
+    }
+
+    // ========================================================================
     // Common Methods
     // ========================================================================
 
@@ -954,6 +1159,8 @@ impl AwsFdw {
         self.objects.clear();
         self.instances.clear();
         self.functions.clear();
+        self.hosted_zones.clear();
+        self.records.clear();
         self.row_idx = 0;
         self.next_token = None;
         self.is_truncated = false;
@@ -965,6 +1172,8 @@ impl AwsFdw {
             Some(ObjectType::S3Objects) => self.list_objects(),
             Some(ObjectType::Ec2Instances) => self.describe_instances(),
             Some(ObjectType::LambdaFunctions) => self.list_functions(),
+            Some(ObjectType::Route53HostedZones) => self.list_hosted_zones(),
+            Some(ObjectType::Route53Records) => self.list_resource_record_sets(),
             None => Err("object type not set".to_string()),
         }
     }
@@ -1029,6 +1238,7 @@ impl Guest for AwsFdw {
         this.prefix = None;
         this.instance_id = None;
         this.function_name = None;
+        this.zone_id = None;
 
         // Parse service and object type
         match service.as_str() {
@@ -1057,7 +1267,16 @@ impl Guest for AwsFdw {
                     _ => return Err(format!("Unknown Lambda object type: {}. Use 'functions'.", object)),
                 });
             }
-            _ => return Err(format!("Unsupported service: {}. Use 's3', 'ec2', or 'lambda'.", service)),
+            "route53" => {
+                this.service = Some(AwsService::Route53);
+                let object = opts.require("object")?;
+                this.object_type = Some(match object.as_str() {
+                    "hosted_zones" => ObjectType::Route53HostedZones,
+                    "records" => ObjectType::Route53Records,
+                    _ => return Err(format!("Unknown Route53 object type: {}. Use 'hosted_zones' or 'records'.", object)),
+                });
+            }
+            _ => return Err(format!("Unsupported service: {}. Use 's3', 'ec2', 'lambda', or 'route53'.", service)),
         }
 
         // Extract filters from WHERE clause quals
@@ -1076,6 +1295,8 @@ impl Guest for AwsFdw {
                 "instance_id" => this.instance_id = Some(value),
                 // Lambda filters
                 "function_name" => this.function_name = Some(value),
+                // Route53 filters
+                "zone_id" => this.zone_id = Some(value),
                 _ => {}
             }
         }
@@ -1226,6 +1447,72 @@ impl Guest for AwsFdw {
                 this.row_idx += 1;
                 Ok(Some(0))
             }
+            Some(ObjectType::Route53HostedZones) => {
+                // Check if we need to fetch more zones
+                if this.row_idx >= this.hosted_zones.len() {
+                    if this.is_truncated && this.next_token.is_some() {
+                        this.list_hosted_zones()?;
+                    } else {
+                        return Ok(None);
+                    }
+                }
+
+                if this.row_idx >= this.hosted_zones.len() {
+                    return Ok(None);
+                }
+
+                let zone = &this.hosted_zones[this.row_idx];
+
+                for col in ctx.get_columns() {
+                    let cell = match col.name().as_str() {
+                        "id" => Some(Cell::String(zone.id.clone())),
+                        "name" => Some(Cell::String(zone.name.clone())),
+                        "caller_reference" => Some(Cell::String(zone.caller_reference.clone())),
+                        "resource_record_set_count" => Some(Cell::I64(zone.resource_record_set_count)),
+                        "comment" => Some(Cell::String(zone.comment.clone())),
+                        "is_private" => Some(Cell::Bool(zone.is_private)),
+                        _ => None,
+                    };
+                    row.push(cell.as_ref());
+                }
+
+                this.row_idx += 1;
+                Ok(Some(0))
+            }
+            Some(ObjectType::Route53Records) => {
+                // Check if we need to fetch more records
+                if this.row_idx >= this.records.len() {
+                    if this.is_truncated && this.next_token.is_some() {
+                        this.list_resource_record_sets()?;
+                    } else {
+                        return Ok(None);
+                    }
+                }
+
+                if this.row_idx >= this.records.len() {
+                    return Ok(None);
+                }
+
+                let record = &this.records[this.row_idx];
+
+                for col in ctx.get_columns() {
+                    let cell = match col.name().as_str() {
+                        "zone_id" => Some(Cell::String(record.zone_id.clone())),
+                        "name" => Some(Cell::String(record.name.clone())),
+                        "type" => Some(Cell::String(record.record_type.clone())),
+                        "ttl" => Some(Cell::I64(record.ttl)),
+                        "values" => Some(Cell::Json(record.values.clone())),
+                        "alias_target" => record.alias_target.clone().map(Cell::Json),
+                        "weight" => record.weight.map(Cell::I64),
+                        "set_identifier" => record.set_identifier.clone().map(Cell::String),
+                        _ => None,
+                    };
+                    row.push(cell.as_ref());
+                }
+
+                this.row_idx += 1;
+                Ok(Some(0))
+            }
             None => Err("object type not set".to_string()),
         }
     }
@@ -1331,20 +1618,52 @@ server {} options (
 )"#),
         ];
 
+        // Define available tables for Route53
+        let route53_tables: Vec<(&str, &str)> = vec![
+            ("hosted_zones", r#"create foreign table if not exists route53_hosted_zones (
+    id text,
+    name text,
+    caller_reference text,
+    resource_record_set_count bigint,
+    comment text,
+    is_private boolean
+)
+server {} options (
+    service 'route53',
+    object 'hosted_zones'
+)"#),
+            ("records", r#"create foreign table if not exists route53_records (
+    zone_id text,
+    name text,
+    type text,
+    ttl bigint,
+    values jsonb,
+    alias_target jsonb,
+    weight bigint,
+    set_identifier text
+)
+server {} options (
+    service 'route53',
+    object 'records'
+)"#),
+        ];
+
         // Determine which tables to create based on remote_schema
         let available_tables: Vec<(&str, &str)> = match stmt.remote_schema.as_str() {
             "s3" => s3_tables,
             "ec2" => ec2_tables,
             "lambda" => lambda_tables,
+            "route53" => route53_tables,
             "all" => {
                 let mut all = s3_tables;
                 all.extend(ec2_tables);
                 all.extend(lambda_tables);
+                all.extend(route53_tables);
                 all
             }
             _ => {
                 return Err(format!(
-                    "Unknown schema '{}'. Use: 's3', 'ec2', 'lambda', or 'all'",
+                    "Unknown schema '{}'. Use: 's3', 'ec2', 'lambda', 'route53', or 'all'",
                     stmt.remote_schema
                 ))
             }

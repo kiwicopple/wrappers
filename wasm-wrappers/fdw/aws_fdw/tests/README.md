@@ -38,6 +38,9 @@ psql -f test_ec2.sql
 
 # Run Lambda tests
 psql -f test_lambda.sql
+
+# Run Route53 tests
+psql -f test_route53.sql
 ```
 
 Or run the test files manually in your PostgreSQL client.
@@ -83,6 +86,17 @@ Or run the test files manually in your PostgreSQL client.
 | Test 5 | Import foreign schema for Lambda |
 | Test 6 | Error cases |
 
+### Route53 Service Tests
+
+| Test | Description |
+|------|-------------|
+| Test 1 | List all hosted zones |
+| Test 2 | Query hosted zone details |
+| Test 3 | List resource record sets |
+| Test 4 | Query DNS records by type |
+| Test 5 | Import foreign schema for Route53 |
+| Test 6 | Error cases |
+
 ## Test Data
 
 The LocalStack initialization script (`init-localstack.sh`) creates:
@@ -101,6 +115,18 @@ The LocalStack initialization script (`init-localstack.sh`) creates:
 - `api-handler`: Python 3.9, 128MB memory, 30s timeout, API request handler
 - `data-processor`: Python 3.9, 512MB memory, 300s timeout, Data processing
 - `notification-sender`: Python 3.9, 256MB memory, 60s timeout, Notification service
+
+### Route53 Hosted Zones
+- `example.com`: Public zone with A, MX, TXT records
+- `internal.local`: Internal zone with A records for db and cache
+
+### Route53 DNS Records
+- `www.example.com`: A record pointing to 192.0.2.1
+- `api.example.com`: A record pointing to 192.0.2.2
+- `mail.example.com`: MX record with two mail servers
+- `example.com`: TXT record with SPF configuration
+- `db.internal.local`: A record pointing to 10.0.0.10
+- `cache.internal.local`: A record pointing to 10.0.0.20
 
 ## Cleanup
 

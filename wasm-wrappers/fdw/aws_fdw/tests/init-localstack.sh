@@ -127,5 +127,108 @@ awslocal lambda list-functions --query 'Functions[*].[FunctionName,Runtime,Memor
 # Cleanup temp files
 rm -rf /tmp/lambda
 
+# ============================================================================
+# Route53 Test Data
+# ============================================================================
+
+echo ""
+echo "Initializing LocalStack Route53 test data..."
+
+# Create hosted zone 1: example.com
+ZONE1=$(awslocal route53 create-hosted-zone \
+  --name example.com \
+  --caller-reference "example-com-$(date +%s)" \
+  --hosted-zone-config Comment="Primary domain" \
+  --query 'HostedZone.Id' \
+  --output text)
+ZONE1_ID=$(echo $ZONE1 | sed 's/\/hostedzone\///')
+echo "Created hosted zone: $ZONE1_ID (example.com)"
+
+# Create hosted zone 2: internal.local (private zone concept)
+ZONE2=$(awslocal route53 create-hosted-zone \
+  --name internal.local \
+  --caller-reference "internal-local-$(date +%s)" \
+  --hosted-zone-config Comment="Internal services" \
+  --query 'HostedZone.Id' \
+  --output text)
+ZONE2_ID=$(echo $ZONE2 | sed 's/\/hostedzone\///')
+echo "Created hosted zone: $ZONE2_ID (internal.local)"
+
+# Add DNS records to example.com
+awslocal route53 change-resource-record-sets \
+  --hosted-zone-id $ZONE1_ID \
+  --change-batch '{
+    "Changes": [
+      {
+        "Action": "CREATE",
+        "ResourceRecordSet": {
+          "Name": "www.example.com",
+          "Type": "A",
+          "TTL": 300,
+          "ResourceRecords": [{"Value": "192.0.2.1"}]
+        }
+      },
+      {
+        "Action": "CREATE",
+        "ResourceRecordSet": {
+          "Name": "api.example.com",
+          "Type": "A",
+          "TTL": 300,
+          "ResourceRecords": [{"Value": "192.0.2.2"}]
+        }
+      },
+      {
+        "Action": "CREATE",
+        "ResourceRecordSet": {
+          "Name": "mail.example.com",
+          "Type": "MX",
+          "TTL": 3600,
+          "ResourceRecords": [{"Value": "10 mail1.example.com"}, {"Value": "20 mail2.example.com"}]
+        }
+      },
+      {
+        "Action": "CREATE",
+        "ResourceRecordSet": {
+          "Name": "example.com",
+          "Type": "TXT",
+          "TTL": 300,
+          "ResourceRecords": [{"Value": "\"v=spf1 include:_spf.example.com ~all\""}]
+        }
+      }
+    ]
+  }'
+echo "Added DNS records to example.com"
+
+# Add DNS records to internal.local
+awslocal route53 change-resource-record-sets \
+  --hosted-zone-id $ZONE2_ID \
+  --change-batch '{
+    "Changes": [
+      {
+        "Action": "CREATE",
+        "ResourceRecordSet": {
+          "Name": "db.internal.local",
+          "Type": "A",
+          "TTL": 60,
+          "ResourceRecords": [{"Value": "10.0.0.10"}]
+        }
+      },
+      {
+        "Action": "CREATE",
+        "ResourceRecordSet": {
+          "Name": "cache.internal.local",
+          "Type": "A",
+          "TTL": 60,
+          "ResourceRecords": [{"Value": "10.0.0.20"}]
+        }
+      }
+    ]
+  }'
+echo "Added DNS records to internal.local"
+
+echo ""
+echo "Route53 Hosted Zones:"
+awslocal route53 list-hosted-zones --query 'HostedZones[*].[Id,Name]' --output table
+
 echo ""
 echo "LocalStack initialization complete!"
