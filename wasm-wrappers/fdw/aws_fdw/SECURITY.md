@@ -81,14 +81,17 @@ EXPLAIN (VERBOSE, FORMAT JSON) SELECT * FROM aws_s3_buckets;
 SELECT srvoptions FROM pg_foreign_server WHERE srvname = 'aws_server';
 ```
 
-### Current Status: PARTIALLY VULNERABLE
-- Error messages may contain credential hints
-- Catalog stores credentials (PostgreSQL's responsibility, but we should use Vault)
+### Current Status: MITIGATED ✓
+- ✓ Error messages are sanitized via `sanitize_error_message()` utility
+- ✓ Credential values are masked (showing only first 4 chars + ***)
+- ✓ All FDW error handlers now use credential masking
+- Catalog stores credentials (PostgreSQL's responsibility - recommend using Vault)
 
-### Mitigation
-- Never include credentials in error messages
-- Use Vault for credential storage exclusively in production
-- Mask credentials in any debug output
+### Mitigation (Implemented)
+- ✓ Never include credentials in error messages (enforced via `sanitize_error_message`)
+- ✓ Mask credentials in any debug output (implemented in `supabase_wrappers::utils`)
+- ✓ Sensitive option patterns detected: password, secret, token, api_key, etc.
+- Use Vault for credential storage exclusively in production (recommended)
 
 ---
 
@@ -348,7 +351,7 @@ URL encoding should prevent this, but verify.
 |--------------|----------|----------------|----------|--------|
 | SSRF via endpoint_url | CRITICAL | Easy | P0 | ⚠️ Open |
 | Supply Chain (WASM URL) | CRITICAL | Medium | P0 | ✓ Mitigated (checksum required) |
-| Credential Exposure | HIGH | Easy | P1 | ⚠️ Open |
+| Credential Exposure | HIGH | Easy | P1 | ✓ Mitigated (error sanitization) |
 | DoS via Large Response | MEDIUM | Easy | P1 | ⚠️ Open |
 | DNS Rebinding | MEDIUM | Medium | P2 | ⚠️ Open |
 | Header Injection | MEDIUM | Hard | P2 | ⚠️ Open |

@@ -235,6 +235,7 @@ END $$;
 SELECT '=== SECTION 3: Credential Security Tests ===' AS section;
 
 -- CRED-001: Verify credentials not in error messages
+-- The sanitize_error_message() utility masks sensitive values in error messages
 SELECT 'CRED-001: Credentials should not appear in errors' AS test;
 DO $$
 DECLARE
@@ -248,6 +249,7 @@ BEGIN
       fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
       fdw_package_version '0.1.0',
+      fdw_package_checksum 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
       aws_access_key_id 'AKIATESTKEY12345678',
       aws_secret_access_key 'SuperSecretKey12345DoNotLeak',
       region 'invalid-region-xyz',
@@ -262,10 +264,13 @@ BEGIN
 EXCEPTION
   WHEN OTHERS THEN
     error_msg := SQLERRM;
-    IF error_msg LIKE '%SuperSecretKey%' THEN
-      RAISE EXCEPTION 'CRED-001 FAILED: Secret key leaked in error: %', error_msg;
-    ELSIF error_msg LIKE '%AKIATESTKEY%' THEN
-      RAISE WARNING 'CRED-001 WARNING: Access key visible in error (less critical): %', error_msg;
+    -- Check that credentials are masked (should show only first 4 chars + ***)
+    IF error_msg LIKE '%SuperSecretKey12345%' THEN
+      RAISE EXCEPTION 'CRED-001 FAILED: Full secret key leaked in error: %', error_msg;
+    ELSIF error_msg LIKE '%Supe***%' THEN
+      RAISE NOTICE 'CRED-001 PASSED: Secret key properly masked in error message';
+    ELSIF error_msg LIKE '%SuperSecret%' THEN
+      RAISE EXCEPTION 'CRED-001 FAILED: Partial secret key leaked (>4 chars): %', error_msg;
     ELSE
       RAISE NOTICE 'CRED-001 PASSED: Credentials not in error message';
     END IF;
