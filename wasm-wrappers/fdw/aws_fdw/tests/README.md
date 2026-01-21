@@ -35,6 +35,9 @@ psql -f test_s3.sql
 
 # Run EC2 tests
 psql -f test_ec2.sql
+
+# Run Lambda tests
+psql -f test_lambda.sql
 ```
 
 Or run the test files manually in your PostgreSQL client.
@@ -69,6 +72,17 @@ Or run the test files manually in your PostgreSQL client.
 | Test 7 | Cross-service query demonstration |
 | Test 8 | Error cases |
 
+### Lambda Service Tests
+
+| Test | Description |
+|------|-------------|
+| Test 1 | List all functions |
+| Test 2 | Query functions by runtime |
+| Test 3 | Query function configuration |
+| Test 4 | Query function code size |
+| Test 5 | Import foreign schema for Lambda |
+| Test 6 | Error cases |
+
 ## Test Data
 
 The LocalStack initialization script (`init-localstack.sh`) creates:
@@ -82,6 +96,11 @@ The LocalStack initialization script (`init-localstack.sh`) creates:
 - `web-server`: t2.micro instance with Name=web-server, Environment=production
 - `db-server`: t2.large instance with Name=db-server, Environment=production
 - `dev-server`: t2.small instance with Name=dev-server, Environment=development
+
+### Lambda Functions
+- `api-handler`: Python 3.9, 128MB memory, 30s timeout, API request handler
+- `data-processor`: Python 3.9, 512MB memory, 300s timeout, Data processing
+- `notification-sender`: Python 3.9, 256MB memory, 60s timeout, Notification service
 
 ## Cleanup
 

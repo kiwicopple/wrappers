@@ -20,7 +20,7 @@ This document outlines the plan for creating a WebAssembly (WASM) Foreign Data W
 |---------|-------------|------------|--------|
 | **S3** | Object storage listing | List buckets, list objects, get object metadata | ✅ Implemented |
 | **EC2** | Instance listing and details | Describe instances with tags | ✅ Implemented |
-| **Lambda** | Serverless functions | List functions, get function details | Planned |
+| **Lambda** | Serverless functions | List functions, get function details | ✅ Implemented |
 | **CloudWatch** | Metrics and logs | List metrics, get metric data | Planned |
 
 ### Future Phases
@@ -610,9 +610,9 @@ fn import_foreign_schema(
 - [x] Support network details (VPC, subnet, IPs)
 
 #### Lambda Service
-- [ ] Implement ListFunctions
+- [x] Implement ListFunctions
 - [ ] Implement GetFunction for details
-- [ ] Add pagination support
+- [x] Add pagination support
 
 #### CloudWatch Service
 - [ ] Implement ListMetrics
@@ -624,14 +624,14 @@ fn import_foreign_schema(
 - [x] Implement `import_foreign_schema` function
 - [x] Define table schemas for S3 (buckets, objects)
 - [x] Define table schemas for EC2 (instances)
-- [ ] Define table schemas for Lambda (functions)
+- [x] Define table schemas for Lambda (functions)
 - [ ] Define table schemas for CloudWatch (metrics, metric_data)
 - [x] Support `all` schema to import all services
 - [x] Handle LIMIT TO filtering
 - [x] Handle EXCEPT filtering
 
 #### Testing & Documentation
-- [x] Integration tests with LocalStack (S3, EC2)
+- [x] Integration tests with LocalStack (S3, EC2, Lambda)
 - [x] Documentation for each service
 - [x] Example SQL scripts
 - [ ] Performance benchmarking

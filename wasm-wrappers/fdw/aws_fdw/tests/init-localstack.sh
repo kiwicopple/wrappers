@@ -68,5 +68,64 @@ echo ""
 echo "EC2 Instances:"
 awslocal ec2 describe-instances --query 'Reservations[*].Instances[*].[InstanceId,InstanceType,State.Name]' --output table
 
+# ============================================================================
+# Lambda Test Data
+# ============================================================================
+
+echo ""
+echo "Initializing LocalStack Lambda test data..."
+
+# Create a simple Lambda function code
+mkdir -p /tmp/lambda
+cat > /tmp/lambda/handler.py << 'PYEOF'
+def handler(event, context):
+    return {"statusCode": 200, "body": "Hello from Lambda!"}
+PYEOF
+
+cd /tmp/lambda && zip -r function.zip handler.py
+
+# Function 1: Python API handler
+awslocal lambda create-function \
+  --function-name api-handler \
+  --runtime python3.9 \
+  --handler handler.handler \
+  --zip-file fileb:///tmp/lambda/function.zip \
+  --role arn:aws:iam::000000000000:role/lambda-role \
+  --memory-size 128 \
+  --timeout 30 \
+  --description "API request handler"
+echo "Created Lambda function: api-handler"
+
+# Function 2: Data processor
+awslocal lambda create-function \
+  --function-name data-processor \
+  --runtime python3.9 \
+  --handler handler.handler \
+  --zip-file fileb:///tmp/lambda/function.zip \
+  --role arn:aws:iam::000000000000:role/lambda-role \
+  --memory-size 512 \
+  --timeout 300 \
+  --description "Processes data from S3"
+echo "Created Lambda function: data-processor"
+
+# Function 3: Notification sender
+awslocal lambda create-function \
+  --function-name notification-sender \
+  --runtime python3.9 \
+  --handler handler.handler \
+  --zip-file fileb:///tmp/lambda/function.zip \
+  --role arn:aws:iam::000000000000:role/lambda-role \
+  --memory-size 256 \
+  --timeout 60 \
+  --description "Sends notifications"
+echo "Created Lambda function: notification-sender"
+
+echo ""
+echo "Lambda Functions:"
+awslocal lambda list-functions --query 'Functions[*].[FunctionName,Runtime,MemorySize]' --output table
+
+# Cleanup temp files
+rm -rf /tmp/lambda
+
 echo ""
 echo "LocalStack initialization complete!"

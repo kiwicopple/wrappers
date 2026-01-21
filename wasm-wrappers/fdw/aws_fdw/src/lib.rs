@@ -241,6 +241,96 @@ fn extract_xml_elements(xml: &str, tag: &str) -> Vec<String> {
 }
 
 // ============================================================================
+// JSON Parsing Helpers
+// ============================================================================
+
+fn extract_json_string(json: &str, key: &str) -> Option<String> {
+    // Find "key": "value" pattern
+    let key_pattern = format!("\"{}\"", key);
+    let key_pos = json.find(&key_pattern)?;
+
+    // Find the colon after the key
+    let after_key = &json[key_pos + key_pattern.len()..];
+    let colon_pos = after_key.find(':')?;
+    let after_colon = &after_key[colon_pos + 1..];
+
+    // Skip whitespace and find opening quote
+    let trimmed = after_colon.trim_start();
+    if !trimmed.starts_with('"') {
+        return None;
+    }
+
+    // Find closing quote (handling escaped quotes)
+    let value_start = 1; // Skip opening quote
+    let chars: Vec<char> = trimmed.chars().collect();
+    let mut i = value_start;
+    let mut escaped = false;
+
+    while i < chars.len() {
+        if escaped {
+            escaped = false;
+        } else if chars[i] == '\\' {
+            escaped = true;
+        } else if chars[i] == '"' {
+            // Found closing quote
+            let value: String = chars[value_start..i].iter().collect();
+            // Unescape the string
+            return Some(value.replace("\\\"", "\"").replace("\\\\", "\\"));
+        }
+        i += 1;
+    }
+
+    None
+}
+
+fn extract_json_number(json: &str, key: &str) -> Option<i64> {
+    // Find "key": number pattern
+    let key_pattern = format!("\"{}\"", key);
+    let key_pos = json.find(&key_pattern)?;
+
+    // Find the colon after the key
+    let after_key = &json[key_pos + key_pattern.len()..];
+    let colon_pos = after_key.find(':')?;
+    let after_colon = &after_key[colon_pos + 1..];
+
+    // Skip whitespace and collect digits
+    let trimmed = after_colon.trim_start();
+    let num_end = trimmed.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(trimmed.len());
+    let num_str = &trimmed[..num_end];
+
+    num_str.parse().ok()
+}
+
+fn find_json_array_end(json: &str) -> Option<usize> {
+    // Find matching ] for [ at position 0
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (i, c) in json.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        match c {
+            '\\' if in_string => escaped = true,
+            '"' => in_string = !in_string,
+            '[' if !in_string => depth += 1,
+            ']' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+// ============================================================================
 // S3 Data Structures
 // ============================================================================
 
@@ -278,6 +368,24 @@ struct Ec2Instance {
 }
 
 // ============================================================================
+// Lambda Data Structures
+// ============================================================================
+
+#[derive(Debug, Clone)]
+struct LambdaFunction {
+    function_name: String,
+    function_arn: String,
+    runtime: String,
+    handler: String,
+    code_size: i64,
+    memory_size: i32,
+    timeout: i32,
+    last_modified: String,
+    description: String,
+    state: String,
+}
+
+// ============================================================================
 // AWS FDW Implementation
 // ============================================================================
 
@@ -285,6 +393,7 @@ struct Ec2Instance {
 enum AwsService {
     S3,
     Ec2,
+    Lambda,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -294,6 +403,8 @@ enum ObjectType {
     S3Objects,
     // EC2
     Ec2Instances,
+    // Lambda
+    LambdaFunctions,
 }
 
 #[derive(Debug, Default)]
@@ -315,12 +426,18 @@ struct AwsFdw {
     // EC2 specific options
     instance_id: Option<String>,
 
+    // Lambda specific options
+    function_name: Option<String>,
+
     // Scan state - S3
     buckets: Vec<S3Bucket>,
     objects: Vec<S3Object>,
 
     // Scan state - EC2
     instances: Vec<Ec2Instance>,
+
+    // Scan state - Lambda
+    functions: Vec<LambdaFunction>,
 
     // Common scan state
     row_idx: usize,
@@ -629,6 +746,136 @@ impl AwsFdw {
     }
 
     // ========================================================================
+    // Lambda Methods
+    // ========================================================================
+
+    fn get_lambda_endpoint(&self) -> String {
+        if let Some(ref endpoint) = self.endpoint_url {
+            endpoint.clone()
+        } else {
+            format!("https://lambda.{}.amazonaws.com", self.region)
+        }
+    }
+
+    fn make_lambda_request(&self, path: &str, query: &str) -> Result<String, FdwError> {
+        let endpoint = self.get_lambda_endpoint();
+        let url = if query.is_empty() {
+            format!("{}{}", endpoint, path)
+        } else {
+            format!("{}{}?{}", endpoint, path, query)
+        };
+
+        let signed = sign_request(
+            "GET",
+            &url,
+            &[],
+            &[],
+            &self.access_key,
+            &self.secret_key,
+            &self.region,
+            "lambda",
+        );
+
+        let req = http::Request {
+            method: http::Method::Get,
+            url: url.clone(),
+            headers: signed.headers,
+            body: String::new(),
+        };
+
+        let resp = http::get(&req)?;
+        http::error_for_status(&resp)?;
+
+        stats::inc_stats(FDW_NAME, stats::Metric::BytesIn, resp.body.len() as i64);
+
+        Ok(resp.body)
+    }
+
+    fn list_functions(&mut self) -> Result<(), FdwError> {
+        let path = "/2015-03-31/functions";
+        let mut query_parts: Vec<String> = Vec::new();
+
+        if let Some(ref token) = self.next_token {
+            query_parts.push(format!("Marker={}", url_encode(token, true)));
+        }
+
+        let query = query_parts.join("&");
+        let body = self.make_lambda_request(path, &query)?;
+
+        // Parse JSON response
+        // Lambda ListFunctions returns JSON like:
+        // {"Functions": [...], "NextMarker": "..."}
+
+        // Parse NextMarker for pagination
+        self.next_token = extract_json_string(&body, "NextMarker");
+        self.is_truncated = self.next_token.is_some();
+
+        // Parse functions array
+        if let Some(functions_start) = body.find("\"Functions\"") {
+            if let Some(arr_start) = body[functions_start..].find('[') {
+                let arr_start_abs = functions_start + arr_start;
+                if let Some(arr_end) = find_json_array_end(&body[arr_start_abs..]) {
+                    let functions_json = &body[arr_start_abs..arr_start_abs + arr_end + 1];
+                    self.parse_lambda_functions(functions_json)?;
+                }
+            }
+        }
+
+        stats::inc_stats(FDW_NAME, stats::Metric::RowsIn, self.functions.len() as i64);
+
+        Ok(())
+    }
+
+    fn parse_lambda_functions(&mut self, json: &str) -> Result<(), FdwError> {
+        // Simple JSON array parsing for function objects
+        let mut depth = 0;
+        let mut obj_start = None;
+        let chars: Vec<char> = json.chars().collect();
+
+        for (i, &c) in chars.iter().enumerate() {
+            match c {
+                '{' => {
+                    if depth == 1 {
+                        obj_start = Some(i);
+                    }
+                    depth += 1;
+                }
+                '}' => {
+                    depth -= 1;
+                    if depth == 1 {
+                        if let Some(start) = obj_start {
+                            let obj_json: String = chars[start..=i].iter().collect();
+                            let func = self.parse_single_function(&obj_json);
+                            self.functions.push(func);
+                        }
+                        obj_start = None;
+                    }
+                }
+                '[' if depth == 0 => depth = 1,
+                ']' if depth == 1 => break,
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    fn parse_single_function(&self, json: &str) -> LambdaFunction {
+        LambdaFunction {
+            function_name: extract_json_string(json, "FunctionName").unwrap_or_default(),
+            function_arn: extract_json_string(json, "FunctionArn").unwrap_or_default(),
+            runtime: extract_json_string(json, "Runtime").unwrap_or_default(),
+            handler: extract_json_string(json, "Handler").unwrap_or_default(),
+            code_size: extract_json_number(json, "CodeSize").unwrap_or(0),
+            memory_size: extract_json_number(json, "MemorySize").unwrap_or(0) as i32,
+            timeout: extract_json_number(json, "Timeout").unwrap_or(0) as i32,
+            last_modified: extract_json_string(json, "LastModified").unwrap_or_default(),
+            description: extract_json_string(json, "Description").unwrap_or_default(),
+            state: extract_json_string(json, "State").unwrap_or_else(|| "Active".to_string()),
+        }
+    }
+
+    // ========================================================================
     // Common Methods
     // ========================================================================
 
@@ -677,10 +924,36 @@ impl AwsFdw {
         Ok(secs * 1_000_000)
     }
 
+    fn parse_lambda_timestamp(ts: &str) -> Result<i64, FdwError> {
+        // Lambda uses format: 2024-01-15T10:30:00.000+0000
+        // We'll parse the main part and ignore timezone (treat as UTC)
+        if ts.is_empty() {
+            return Ok(0);
+        }
+
+        // Remove timezone suffix (e.g., +0000)
+        let ts = if let Some(plus_pos) = ts.rfind('+') {
+            &ts[..plus_pos]
+        } else if let Some(minus_pos) = ts.rfind('-') {
+            // Check if this is actually in the date part (not timezone)
+            if minus_pos > 10 {
+                &ts[..minus_pos]
+            } else {
+                ts
+            }
+        } else {
+            ts
+        };
+
+        // Now parse like ISO8601
+        Self::parse_iso8601_timestamp(ts)
+    }
+
     fn reset_scan_state(&mut self) {
         self.buckets.clear();
         self.objects.clear();
         self.instances.clear();
+        self.functions.clear();
         self.row_idx = 0;
         self.next_token = None;
         self.is_truncated = false;
@@ -691,6 +964,7 @@ impl AwsFdw {
             Some(ObjectType::S3Buckets) => self.list_buckets(),
             Some(ObjectType::S3Objects) => self.list_objects(),
             Some(ObjectType::Ec2Instances) => self.describe_instances(),
+            Some(ObjectType::LambdaFunctions) => self.list_functions(),
             None => Err("object type not set".to_string()),
         }
     }
@@ -754,6 +1028,7 @@ impl Guest for AwsFdw {
         this.bucket = None;
         this.prefix = None;
         this.instance_id = None;
+        this.function_name = None;
 
         // Parse service and object type
         match service.as_str() {
@@ -774,7 +1049,15 @@ impl Guest for AwsFdw {
                     _ => return Err(format!("Unknown EC2 object type: {}. Use 'instances'.", object)),
                 });
             }
-            _ => return Err(format!("Unsupported service: {}. Use 's3' or 'ec2'.", service)),
+            "lambda" => {
+                this.service = Some(AwsService::Lambda);
+                let object = opts.require("object")?;
+                this.object_type = Some(match object.as_str() {
+                    "functions" => ObjectType::LambdaFunctions,
+                    _ => return Err(format!("Unknown Lambda object type: {}. Use 'functions'.", object)),
+                });
+            }
+            _ => return Err(format!("Unsupported service: {}. Use 's3', 'ec2', or 'lambda'.", service)),
         }
 
         // Extract filters from WHERE clause quals
@@ -791,6 +1074,8 @@ impl Guest for AwsFdw {
                 "prefix" => this.prefix = Some(value),
                 // EC2 filters
                 "instance_id" => this.instance_id = Some(value),
+                // Lambda filters
+                "function_name" => this.function_name = Some(value),
                 _ => {}
             }
         }
@@ -901,6 +1186,46 @@ impl Guest for AwsFdw {
                 this.row_idx += 1;
                 Ok(Some(0))
             }
+            Some(ObjectType::LambdaFunctions) => {
+                // Check if we need to fetch more functions
+                if this.row_idx >= this.functions.len() {
+                    if this.is_truncated && this.next_token.is_some() {
+                        this.list_functions()?;
+                    } else {
+                        return Ok(None);
+                    }
+                }
+
+                if this.row_idx >= this.functions.len() {
+                    return Ok(None);
+                }
+
+                let func = &this.functions[this.row_idx];
+
+                for col in ctx.get_columns() {
+                    let cell = match col.name().as_str() {
+                        "function_name" => Some(Cell::String(func.function_name.clone())),
+                        "function_arn" => Some(Cell::String(func.function_arn.clone())),
+                        "runtime" => Some(Cell::String(func.runtime.clone())),
+                        "handler" => Some(Cell::String(func.handler.clone())),
+                        "code_size" => Some(Cell::I64(func.code_size)),
+                        "memory_size" => Some(Cell::I32(func.memory_size)),
+                        "timeout" => Some(Cell::I32(func.timeout)),
+                        "last_modified" => {
+                            // Lambda uses a different timestamp format: 2024-01-15T10:30:00.000+0000
+                            let ts = Self::parse_lambda_timestamp(&func.last_modified)?;
+                            Some(Cell::Timestamp(ts))
+                        }
+                        "description" => Some(Cell::String(func.description.clone())),
+                        "state" => Some(Cell::String(func.state.clone())),
+                        _ => None,
+                    };
+                    row.push(cell.as_ref());
+                }
+
+                this.row_idx += 1;
+                Ok(Some(0))
+            }
             None => Err("object type not set".to_string()),
         }
     }
@@ -986,18 +1311,40 @@ server {} options (
 )"#),
         ];
 
+        // Define available tables for Lambda
+        let lambda_tables: Vec<(&str, &str)> = vec![
+            ("functions", r#"create foreign table if not exists lambda_functions (
+    function_name text,
+    function_arn text,
+    runtime text,
+    handler text,
+    code_size bigint,
+    memory_size int,
+    timeout int,
+    last_modified timestamp,
+    description text,
+    state text
+)
+server {} options (
+    service 'lambda',
+    object 'functions'
+)"#),
+        ];
+
         // Determine which tables to create based on remote_schema
         let available_tables: Vec<(&str, &str)> = match stmt.remote_schema.as_str() {
             "s3" => s3_tables,
             "ec2" => ec2_tables,
+            "lambda" => lambda_tables,
             "all" => {
                 let mut all = s3_tables;
                 all.extend(ec2_tables);
+                all.extend(lambda_tables);
                 all
             }
             _ => {
                 return Err(format!(
-                    "Unknown schema '{}'. Use: 's3', 'ec2', or 'all'",
+                    "Unknown schema '{}'. Use: 's3', 'ec2', 'lambda', or 'all'",
                     stmt.remote_schema
                 ))
             }
