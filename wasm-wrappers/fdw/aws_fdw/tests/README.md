@@ -8,6 +8,23 @@ This directory contains integration tests for the AWS WASM FDW.
 - PostgreSQL with the `wrappers` extension installed
 - The `aws_fdw.wasm` component built
 
+## Security: Checksum Requirement
+
+**IMPORTANT**: The `fdw_package_checksum` option is now **REQUIRED** for all WASM FDW servers. This prevents supply chain attacks where a malicious actor could substitute a backdoored WASM package.
+
+Before running tests, calculate the checksum of your built WASM component:
+
+```bash
+# Calculate checksum
+sha256sum target/wasm32-unknown-unknown/release/aws_fdw.wasm | awk '{print "sha256:" $1}'
+
+# Example output: sha256:abc123def456...
+
+# Replace REPLACE_WITH_ACTUAL_CHECKSUM in test files with the actual value
+```
+
+The test files contain placeholder checksums (`sha256:REPLACE_WITH_ACTUAL_CHECKSUM`) that must be updated with the actual checksum before running tests.
+
 ## Running Tests
 
 ### 1. Start LocalStack

@@ -21,12 +21,15 @@ CREATE FOREIGN DATA WRAPPER aws_ec2_wrapper
   VALIDATOR wasm_fdw_validator;
 
 -- Create server pointing to LocalStack
+-- NOTE: fdw_package_checksum is REQUIRED for security (prevents supply chain attacks)
+-- Calculate with: sha256sum aws_fdw.wasm | awk '{print "sha256:" $1}'
 CREATE SERVER aws_ec2_test_server
   FOREIGN DATA WRAPPER aws_ec2_wrapper
   OPTIONS (
     fdw_package_url 'file:///path/to/aws_fdw.wasm',
     fdw_package_name 'supabase:aws-fdw',
     fdw_package_version '0.1.0',
+    fdw_package_checksum 'sha256:REPLACE_WITH_ACTUAL_CHECKSUM',
     aws_access_key_id 'test',
     aws_secret_access_key 'test',
     region 'us-east-1',

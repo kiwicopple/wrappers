@@ -234,13 +234,15 @@ CREATE SERVER evil_server
 - Steal all credentials passed to the FDW
 - Pivot to attack internal systems
 
-### Current Status: PARTIALLY MITIGATED
-- `fdw_package_checksum` exists but may not be enforced
+### Current Status: MITIGATED ✓
+- `fdw_package_checksum` is now REQUIRED for all WASM FDW servers
+- Server creation fails without checksum: `required option "fdw_package_checksum" is not specified`
+- Checksum is verified against the downloaded WASM package
 
-### Mitigation
-- REQUIRE checksum verification
-- Whitelist allowed package URLs
-- Sign WASM packages
+### Mitigation (Implemented)
+- ✓ REQUIRE checksum verification (enforced in validator)
+- Whitelist allowed package URLs (future enhancement)
+- Sign WASM packages (future enhancement)
 
 ---
 
@@ -342,16 +344,16 @@ URL encoding should prevent this, but verify.
 
 ## Priority Matrix
 
-| Vulnerability | Severity | Exploitability | Priority |
-|--------------|----------|----------------|----------|
-| SSRF via endpoint_url | CRITICAL | Easy | P0 |
-| Supply Chain (WASM URL) | CRITICAL | Medium | P0 |
-| Credential Exposure | HIGH | Easy | P1 |
-| DoS via Large Response | MEDIUM | Easy | P1 |
-| DNS Rebinding | MEDIUM | Medium | P2 |
-| Header Injection | MEDIUM | Hard | P2 |
-| XXE (mitigated) | LOW | Hard | P3 |
-| Path Traversal | LOW | Hard | P3 |
+| Vulnerability | Severity | Exploitability | Priority | Status |
+|--------------|----------|----------------|----------|--------|
+| SSRF via endpoint_url | CRITICAL | Easy | P0 | ⚠️ Open |
+| Supply Chain (WASM URL) | CRITICAL | Medium | P0 | ✓ Mitigated (checksum required) |
+| Credential Exposure | HIGH | Easy | P1 | ⚠️ Open |
+| DoS via Large Response | MEDIUM | Easy | P1 | ⚠️ Open |
+| DNS Rebinding | MEDIUM | Medium | P2 | ⚠️ Open |
+| Header Injection | MEDIUM | Hard | P2 | ⚠️ Open |
+| XXE (mitigated) | LOW | Hard | P3 | ✓ Mitigated (no entity expansion) |
+| Path Traversal | LOW | Hard | P3 | ⚠️ Open |
 
 ---
 
