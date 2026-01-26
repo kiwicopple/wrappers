@@ -7,7 +7,7 @@ use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::PgSqlErrorCode;
 use thiserror::Error;
 
-use supabase_wrappers::prelude::{CreateRuntimeError, OptionsError};
+use supabase_wrappers::prelude::{sanitize_error_message, CreateRuntimeError, OptionsError};
 
 #[derive(Error, Debug)]
 enum CognitoFdwError {
@@ -46,11 +46,17 @@ enum CognitoFdwError {
 
     #[error("exactly one of `aws_secret_access_key` or `api_key_id` options must be set")]
     SetOneOfSecretKeyAndApiKeyIdSet,
+
+    #[error("response too large ({0} bytes). Maximum allowed: {1} bytes")]
+    ResponseTooLarge(usize, usize),
 }
 
 impl From<CognitoFdwError> for ErrorReport {
     fn from(value: CognitoFdwError) -> Self {
-        ErrorReport::new(PgSqlErrorCode::ERRCODE_FDW_ERROR, format!("{value}"), "")
+        // SECURITY: Sanitize error messages to prevent credential leakage
+        // Cognito errors may contain AWS credentials or tokens
+        let error_message = sanitize_error_message(&format!("{value}"));
+        ErrorReport::new(PgSqlErrorCode::ERRCODE_FDW_ERROR, error_message, "")
     }
 }
 

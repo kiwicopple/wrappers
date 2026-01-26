@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "aws_fdw",
     "cal_fdw",
     "calendly_fdw",
     "cfd1_fdw",
