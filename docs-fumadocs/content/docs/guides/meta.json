@@ -1,0 +1,17 @@
+{
+  "title": "Guides",
+  "pages": [
+    "native-wasm",
+    "query-pushdown",
+    "remote-subqueries",
+    "security",
+    "usage-statistics",
+    "installation",
+    "updating-wrappers",
+    "removing-wrappers",
+    "limitations",
+    "---Development---",
+    "create-wasm-wrapper",
+    "wasm-advanced"
+  ]
+}

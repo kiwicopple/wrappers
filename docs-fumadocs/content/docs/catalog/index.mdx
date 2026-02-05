@@ -1,0 +1,60 @@
+---
+title: "Catalog"
+description: "Each FDW documentation includes a detailed \"Limitations\" section that describes important considerations and potential pitfalls when using that specific FDW."
+---
+
+# Catalog
+
+Each FDW documentation includes a detailed "Limitations" section that describes important considerations and potential pitfalls when using that specific FDW.
+
+## Official
+
+| Integration   | Select | Insert | Update | Delete | Truncate | Push Down |
+| ------------- | :----: | :----: | :----: | :----: | :------: | :-------: |
+| Airtable      |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ❌     |
+| Auth0         |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ❌     |
+| AWS Cognito   |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ❌     |
+| BigQuery      |   ✅   |   ✅   |   ✅   |   ✅   |    ❌    |    ✅     |
+| Cal.com       |   ✅   |   ✅   |   ❌   |   ❌   |    ❌    |    ❌     |
+| Calendly      |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ❌     |
+| Clerk         |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ❌     |
+| ClickHouse    |   ✅   |   ✅   |   ✅   |   ✅   |    ❌    |    ✅     |
+| Cloudflare D1 |   ✅   |   ✅   |   ✅   |   ✅   |    ❌    |    ✅     |
+| DuckDB        |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ❌     |
+| Firebase      |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ❌     |
+| Gravatar      |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ❌     |
+| HubSpot       |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ❌     |
+| Infura        |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ✅     |
+| Iceberg       |   ✅   |   ✅   |   ❌   |   ❌   |    ❌    |    ❌     |
+| Logflare      |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ❌     |
+| Notion        |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ❌     |
+| Orb           |   ✅   |   ✅   |   ✅   |   ✅   |    ❌    |    ✅     |
+| Paddle        |   ✅   |   ✅   |   ✅   |   ❌   |    ❌    |    ✅     |
+| Redis         |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ❌     |
+| S3            |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ❌     |
+| S3 Vectors    |   ✅   |   ✅   |   ❌   |   ✅   |    ❌    |    ✅     |
+| Shopify       |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ❌     |
+| Snowflake     |   ✅   |   ✅   |   ✅   |   ✅   |    ❌    |    ✅     |
+| Stripe        |   ✅   |   ✅   |   ✅   |   ✅   |    ❌    |    ✅     |
+| SQL Server    |   ✅   |   ❌   |   ❌   |   ❌   |    ❌    |    ✅     |
+
+## Community
+
+Wasm wrappers can be installed directly from GitHub or any external source.
+
+See [Developing a Wasm Wrapper](guides/create-wasm-wrapper) for instructions on how to build and develop your own.
+
+| Integration   |            Developer             |         Docs         |                                         Source                                         |
+| :-----------: | :------------------------------: | :------------------: | :------------------------------------------------------------------------------------: |
+| Cal.com       | [Supabase](https://supabase.com) | [Link](cal)       | [Link](https://github.com/supabase/wrappers/tree/main/wasm-wrappers/fdw/cal_fdw)       |
+| Calendly      | [Supabase](https://supabase.com) | [Link](calendly)  | [Link](https://github.com/supabase/wrappers/tree/main/wasm-wrappers/fdw/calendly_fdw)  |
+| Clerk         | [Supabase](https://supabase.com) | [Link](clerk)     | [Link](https://github.com/supabase/wrappers/tree/main/wasm-wrappers/fdw/clerk_fdw)  |
+| Cloudflare D1 | [Supabase](https://supabase.com) | [Link](cfd1)      | [Link](https://github.com/supabase/wrappers/tree/main/wasm-wrappers/fdw/cfd1_fdw)      |
+| Gravatar      | [Automattic](https://automattic.com) | [Link](gravatar)  | [Link](https://github.com/Automattic/gravatar-wasm-fdw)  |
+| HubSpot       | [Supabase](https://supabase.com) | [Link](hubspot)   | [Link](https://github.com/supabase/wrappers/tree/main/wasm-wrappers/fdw/hubspot_fdw)   |
+| Infura        | [Supabase](https://supabase.com) | [Link](infura)    | [Link](https://github.com/supabase/wrappers/tree/main/wasm-wrappers/fdw/infura_fdw)    |
+| Notion        | [Supabase](https://supabase.com) | [Link](notion)    | [Link](https://github.com/supabase/wrappers/tree/main/wasm-wrappers/fdw/notion_fdw)    |
+| Orb           | [Supabase](https://supabase.com) | [Link](orb)       | [Link](https://github.com/supabase/wrappers/tree/main/wasm-wrappers/fdw/orb_fdw)  |
+| Paddle        | [Supabase](https://supabase.com) | [Link](paddle)    | [Link](https://github.com/supabase/wrappers/tree/main/wasm-wrappers/fdw/paddle_fdw)    |
+| Shopify       | [Supabase](https://supabase.com) | [Link](shopify)   | [Link](https://github.com/supabase/wrappers/tree/main/wasm-wrappers/fdw/shopify_fdw)   |
+| Snowflake     | [Supabase](https://supabase.com) | [Link](snowflake) | [Link](https://github.com/supabase/wrappers/tree/main/wasm-wrappers/fdw/snowflake_fdw) |
